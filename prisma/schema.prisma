@@ -1,0 +1,240 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Collection {
+  id              String   @id @default(cuid())
+  handle          String   @unique
+  title           String
+  description     String?
+  descriptionHtml String?
+  imageUrl        String?
+  imageAlt        String?
+
+  products        Product[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Product {
+  id                  String    @id @default(cuid())
+  handle              String    @unique
+  title               String
+  vendor              String?
+  description         String?
+  descriptionHtml     String?
+  collection          Collection @relation(fields: [collectionId], references: [id])
+  collectionId        String
+
+  tags                ProductTag[]
+
+  featuredImageUrl    String?
+  featuredImageAlt    String?
+
+  images              ProductImage[]
+  options             ProductOption[]
+  variants            ProductVariant[]
+
+  metafields          Json?
+  published           Boolean   @default(true)
+  publishedAt         DateTime?
+
+  cartLines           CartLine[]        @relation("CartLine_Product")
+  orderItems          OrderItem[]       @relation("OrderItem_Product")
+
+  minPriceAmount      Decimal
+  minPriceCurrency    String
+  maxPriceAmount      Decimal
+  maxPriceCurrency    String
+
+  compareMinAmount    Decimal?
+  compareMinCurrency  String?
+  compareMaxAmount    Decimal?
+  compareMaxCurrency  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ProductImage {
+  id        String  @id @default(cuid())
+  url       String
+  altText   String?
+  product   Product @relation(fields: [productId], references: [id])
+  productId String
+}
+
+model ProductOption {
+  id        String               @id @default(cuid())
+  name      String
+  product   Product              @relation(fields: [productId], references: [id])
+  productId String
+  values    ProductOptionValue[]
+}
+
+model ProductOptionValue {
+  id        String        @id @default(cuid())
+  name      String
+  color     String?
+  option    ProductOption @relation(fields: [optionId], references: [id])
+  optionId  String
+}
+
+model ProductVariant {
+  id               String   @id @default(cuid())
+  product          Product  @relation(fields: [productId], references: [id])
+  productId        String
+  availableForSale Boolean  @default(true)
+  priceAmount      Decimal
+  priceCurrency    String
+  compareAmount    Decimal?
+  compareCurrency  String?
+
+  sku              String? 
+  barcode          String?
+  inventoryQuantity Int     @default(0)
+  weightInGrams    Int?
+
+  selectedOptions  Json
+
+  cartLines        CartLine[]     @relation("CartLine_Variant")
+  orderItems       OrderItem[]    @relation("OrderItem_Variant")
+}
+
+model Menu {
+  id     String     @id @default(cuid())
+  handle String     @unique
+  items  MenuItem[]
+}
+
+model MenuItem {
+  id       String  @id @default(cuid())
+  title    String
+  url      String
+  menu     Menu    @relation(fields: [menuId], references: [id])
+  menuId   String
+  parent   MenuItem? @relation("MenuItemToChildren", fields: [parentId], references: [id])
+  parentId String?
+  children MenuItem[] @relation("MenuItemToChildren")
+}
+
+model User {
+  id             String    @id @default(cuid())
+  email          String    @unique
+  passwordHash   String
+  firstName      String?
+  lastName       String?
+  isAdmin        Boolean   @default(false)
+  phone          String?
+  addresses      Address[]
+  orders         Order[]
+  carts          Cart[]
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+model Address {
+  id         String   @id @default(cuid())
+  user       User     @relation(fields: [userId], references: [id])
+  userId     String
+  firstName  String
+  lastName   String
+  address1   String
+  address2   String?
+  city       String
+  province   String?
+  zip        String?
+  country    String
+  phone      String?
+  isDefault  Boolean  @default(false)
+
+  // back-relations for orders
+  ordersAsShipping Order[] @relation("Order_ShippingAddress")
+  ordersAsBilling  Order[] @relation("Order_BillingAddress")  // <-- Add this
+}
+
+
+model Cart {
+  id           String       @id @default(cuid())
+  user         User?        @relation(fields: [userId], references: [id])
+  userId       String?
+  totalQuantity Int         @default(0)
+  lines        CartLine[]
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+}
+
+model CartLine {
+  id        String        @id @default(cuid())
+  cart      Cart          @relation(fields: [cartId], references: [id])
+  cartId    String
+  product   Product       @relation("CartLine_Product", fields: [productId], references: [id])
+  productId String
+  variant   ProductVariant? @relation("CartLine_Variant", fields: [variantId], references: [id])
+  variantId String?
+  quantity  Int           @default(1)
+  priceAmount   Decimal
+  priceCurrency String
+}
+
+model Order {
+  id                String     @id @default(cuid())
+  user              User       @relation(fields: [userId], references: [id])
+  userId            String
+  status            String     @default("PENDING")
+  totalAmount       String
+  totalCurrency     String
+  orderNumber       String?    
+  paymentMethod     String?    
+  placedAt          DateTime   @default(now())
+  items             OrderItem[]
+  shippingAddressId String?
+  shippingAddress   Address?   @relation("Order_ShippingAddress", fields: [shippingAddressId], references: [id])
+  billingAddressId  String?
+  billingAddress    Address?   @relation("Order_BillingAddress", fields: [billingAddressId], references: [id])
+  cancelReason      String?
+}
+
+
+
+model OrderItem {
+  id        String        @id @default(cuid())
+  order     Order         @relation(fields: [orderId], references: [id])
+  orderId   String
+  product   Product       @relation("OrderItem_Product", fields: [productId], references: [id])
+  productId String
+  variant   ProductVariant? @relation("OrderItem_Variant", fields: [variantId], references: [id])
+  variantId String?
+  quantity  Int
+  priceAmount   Decimal
+  priceCurrency String
+}
+
+model Tag {
+  id          String       @id @default(cuid())
+  handle      String       @unique
+  name        String
+  description String?
+  products    ProductTag[] 
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+}
+
+model ProductTag {
+  product     Product   @relation(fields: [productId], references: [id])
+  productId   String
+  tag         Tag       @relation(fields: [tagId], references: [id])
+  tagId       String
+  createdAt   DateTime  @default(now())
+
+  @@id([productId, tagId])
+  @@index([tagId])
+  @@index([productId])
+}

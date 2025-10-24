@@ -1,0 +1,271 @@
+import { Router } from "express";
+import prisma from "../lib/prisma.js";
+import { isAuthenticated, isAdmin } from "../middleware/auth.js";
+
+const router = Router();
+
+// Utility: generate collection handle
+const makeHandle = (title) =>
+  title.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-");
+
+/**
+ * 🧾 Get all collections
+ */
+router.get("/", async (req, res, next) => {
+  try {
+    const collections = await prisma.collection.findMany({
+      orderBy: { title: "asc" },
+      include: {
+        _count: { select: { products: true } },
+      },
+    });
+
+    res.json(
+      collections.map((c) => ({
+        id: c.id,
+        title: c.title,
+        handle: c.handle,
+        description: c.description,
+        imageUrl: c.imageUrl,
+        imageAlt: c.imageAlt,
+        productCount: c._count.products,
+      }))
+    );
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * 🧩 Get a single collection by handle (with products)
+ */
+router.get("/:handle", async (req, res, next) => {
+  try {
+    const { handle } = req.params;
+
+    const collection = await prisma.collection.findFirst({
+      where: { handle },
+      include: {
+        products: {
+          where: { published: true },
+          include: {
+            images: true,
+            tags: { include: { tag: true } },
+            variants: { take: 1 },
+          },
+        },
+      },
+    });
+
+    if (!collection)
+      return res.status(404).json({ error: "Collection not found" });
+
+    res.json({
+      id: collection.id,
+      title: collection.title,
+      handle: collection.handle,
+      description: collection.description,
+      imageUrl: collection.imageUrl,
+      imageAlt: collection.imageAlt,
+      products: collection.products.map((p) => ({
+        id: p.id,
+        title: p.title,
+        handle: p.handle,
+        description: p.description,
+        featuredImageUrl: p.featuredImageUrl,
+        featuredImageAlt: p.featuredImageAlt,
+        images: p.images,
+        minPriceAmount: p.minPriceAmount,
+        maxPriceAmount: p.maxPriceAmount,
+        priceCurrency: p.minPriceCurrency,
+        tags: p.tags.map((t) => t.tag.name),
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * 👑 Get all collections (Admin)
+ */
+router.get("/admin/all", isAuthenticated, isAdmin, async (req, res, next) => {
+  try {
+    const collections = await prisma.collection.findMany({
+      orderBy: { title: "asc" },
+      include: { _count: { select: { products: true } } },
+    });
+
+    res.json(
+      collections.map((c) => ({
+        id: c.id,
+        title: c.title,
+        handle: c.handle,
+        description: c.description,
+        imageUrl: c.imageUrl,
+        imageAlt: c.imageAlt,
+        productCount: c._count.products,
+        createdAt: c.createdAt,
+        updatedAt: c.updatedAt,
+      }))
+    );
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * ➕ Create collection (Admin)
+ */
+router.post("/", isAuthenticated, isAdmin, async (req, res, next) => {
+  try {
+    const { title, handle, description, imageUrl, imageAlt } = req.body;
+
+    if (!title)
+      return res.status(400).json({ error: "Title is required." });
+
+    const collectionHandle = handle || makeHandle(title);
+
+    const exists = await prisma.collection.findUnique({
+      where: { handle: collectionHandle },
+    });
+    if (exists)
+      return res
+        .status(400)
+        .json({ error: "Collection with this handle already exists." });
+
+    const collection = await prisma.collection.create({
+      data: { title, handle: collectionHandle, description, imageUrl, imageAlt },
+    });
+
+    res.status(201).json(collection);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * ✏️ Update collection (Admin)
+ */
+router.put("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { title, handle, description, imageUrl, imageAlt } = req.body;
+
+    const collection = await prisma.collection.findUnique({ where: { id } });
+    if (!collection)
+      return res.status(404).json({ error: "Collection not found" });
+
+    let newHandle = handle;
+    if (!newHandle && title && title !== collection.title) {
+      newHandle = makeHandle(title);
+    }
+
+    if (newHandle && newHandle !== collection.handle) {
+      const handleExists = await prisma.collection.findUnique({
+        where: { handle: newHandle },
+      });
+      if (handleExists)
+        return res
+          .status(400)
+          .json({ error: "Collection with this handle already exists" });
+    }
+
+    const updated = await prisma.collection.update({
+      where: { id },
+      data: {
+        title: title ?? undefined,
+        handle: newHandle ?? undefined,
+        description: description ?? undefined,
+        imageUrl: imageUrl ?? undefined,
+        imageAlt: imageAlt ?? undefined,
+      },
+    });
+
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * ❌ Delete collection (Admin)
+ */
+router.delete("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const existing = await prisma.collection.findUnique({ where: { id } });
+    if (!existing)
+      return res.status(404).json({ error: "Collection not found" });
+
+    await prisma.$transaction(async (tx) => {
+      // Optional: Set collectionId to null for its products
+      await tx.product.updateMany({
+        where: { collectionId: id },
+        data: { collectionId: null },
+      });
+
+      // Delete collection
+      await tx.collection.delete({ where: { id } });
+    });
+
+    res.json({ message: "Collection deleted successfully" });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * 🧱 Add products to collection (Admin)
+ */
+router.post("/:id/products", isAuthenticated, isAdmin, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { productIds } = req.body;
+
+    if (!Array.isArray(productIds) || !productIds.length)
+      return res.status(400).json({ error: "Product IDs are required." });
+
+    const exists = await prisma.collection.findUnique({ where: { id } });
+    if (!exists)
+      return res.status(404).json({ error: "Collection not found" });
+
+    await prisma.product.updateMany({
+      where: { id: { in: productIds } },
+      data: { collectionId: id },
+    });
+
+    res.json({ message: "Products added to collection successfully" });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * 🧹 Remove products from collection (Admin)
+ */
+router.delete("/:id/products", isAuthenticated, isAdmin, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { productIds } = req.body;
+
+    if (!Array.isArray(productIds) || !productIds.length)
+      return res.status(400).json({ error: "Product IDs are required." });
+
+    const exists = await prisma.collection.findUnique({ where: { id } });
+    if (!exists)
+      return res.status(404).json({ error: "Collection not found" });
+
+    await prisma.product.updateMany({
+      where: { id: { in: productIds }, collectionId: id },
+      data: { collectionId: null },
+    });
+
+    res.json({ message: "Products removed from collection successfully" });
+  } catch (err) {
+    next(err);
+  }
+});
+
+export default router;

@@ -42,10 +42,23 @@ router.get("/", async (req, res, next) => {
 
     // Search filter
     if (search) {
-      where.OR = [
-        { title: { contains: search, mode: "insensitive" } },
-        { description: { contains: search, mode: "insensitive" } },
-      ];
+      const searchStr = search;
+
+      // Check if search term exactly matches a tag
+      const exactTag = await prisma.tag.findUnique({
+        where: { handle: searchStr },
+      });
+
+      if (exactTag) {
+        // Exact tag match → filter by tag only
+        where.tags = { some: { tagId: exactTag.id } };
+      } else {
+        // Otherwise search in title/description
+        where.OR = [
+          { title: { contains: searchStr, mode: "insensitive" } },
+          { description: { contains: searchStr, mode: "insensitive" } },
+        ];
+      }
     }
 
     // Published filter
@@ -54,8 +67,8 @@ router.get("/", async (req, res, next) => {
 
     // Price filter
     const priceConditions = [];
-    if (minPrice) priceConditions.push({ minPriceAmount: { gte: parseFloat(minPrice) } });
-    if (maxPrice) priceConditions.push({ maxPriceAmount: { lte: parseFloat(maxPrice) } });
+    if (minPrice) priceConditions.push({ minPriceAmount: { gte: parseFloat(minPrice ) } });
+    if (maxPrice) priceConditions.push({ maxPriceAmount: { lte: parseFloat(maxPrice ) } });
     if (priceConditions.length > 0) {
       where.AND = where.AND ? [...where.AND, ...priceConditions] : priceConditions;
     }
@@ -68,7 +81,7 @@ router.get("/", async (req, res, next) => {
       where,
       skip,
       take,
-      orderBy: { [sort]: order.toLowerCase() },
+      orderBy: { [sort ]: (order ).toLowerCase() },
       include: {
         collection: { select: { id: true, handle: true, title: true } },
         images: true,
@@ -88,8 +101,8 @@ router.get("/", async (req, res, next) => {
       products: formatted,
       pagination: {
         total,
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: parseInt(page ),
+        limit: parseInt(limit ),
         pages: Math.ceil(total / parseInt(limit)),
       },
     });

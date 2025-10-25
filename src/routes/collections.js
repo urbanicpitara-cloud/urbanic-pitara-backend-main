@@ -37,28 +37,39 @@ router.get("/", async (req, res, next) => {
 });
 
 /**
- * 🧩 Get a single collection by handle (with products)
+ * 🧩 Get a single collection by handle (with paginated products)
  */
 router.get("/:handle", async (req, res, next) => {
   try {
     const { handle } = req.params;
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
+    const limit = Math.max(parseInt(req.query.limit ) || 8, 1);
+    const skip = (page - 1) * limit;
 
-    const collection = await prisma.collection.findFirst({
+    // Fetch collection
+    const collection = await prisma.collection.findUnique({
       where: { handle },
       include: {
         products: {
-          where: { published: true },
+          // where: { published: true },
           include: {
             images: true,
             tags: { include: { tag: true } },
             variants: { take: 1 },
           },
+          skip,
+          take: limit,
+          orderBy: { title: "asc" },
         },
       },
     });
 
-    if (!collection)
-      return res.status(404).json({ error: "Collection not found" });
+    if (!collection) return res.status(404).json({ error: "Collection not found" });
+
+    // Count total products
+    const totalProducts = await prisma.product.count({
+      where: { collectionId: collection.id, },
+    });
 
     res.json({
       id: collection.id,
@@ -80,6 +91,12 @@ router.get("/:handle", async (req, res, next) => {
         priceCurrency: p.minPriceCurrency,
         tags: p.tags.map((t) => t.tag.name),
       })),
+      pagination: {
+        page,
+        limit,
+        total: totalProducts,
+        totalPages: Math.max(Math.ceil(totalProducts / limit), 1),
+      },
     });
   } catch (err) {
     next(err);
@@ -87,17 +104,35 @@ router.get("/:handle", async (req, res, next) => {
 });
 
 /**
- * 👑 Get all collections (Admin)
+ * 👑 Get all collections (Admin) with pagination
  */
 router.get("/admin/all", isAuthenticated, isAdmin, async (req, res, next) => {
   try {
-    const collections = await prisma.collection.findMany({
-      orderBy: { title: "asc" },
-      include: { _count: { select: { products: true } } },
+    const page = Math.max(parseInt(req.query.page ) || 1, 1);
+    const limit = Math.max(parseInt(req.query.limit ) || 10, 1);
+    const skip = (page - 1) * limit;
+
+    const sortField = (req.query.sortField ) || "title";
+    const sortOrder = (req.query.sortOrder ) === "desc" ? "desc" : "asc";
+
+    const search = (req.query.search) || "";
+
+    // Count total collections
+    const totalCollections = await prisma.collection.count({
+      where: { title: { contains: search, mode: "insensitive" } },
     });
 
-    res.json(
-      collections.map((c) => ({
+    // Fetch paginated collections
+    const collections = await prisma.collection.findMany({
+      where: { title: { contains: search, mode: "insensitive" } },
+      include: { _count: { select: { products: true } } },
+      orderBy: { [sortField]: sortOrder },
+      skip,
+      take: limit,
+    });
+
+    res.json({
+      collections: collections.map((c) => ({
         id: c.id,
         title: c.title,
         handle: c.handle,
@@ -107,12 +142,19 @@ router.get("/admin/all", isAuthenticated, isAdmin, async (req, res, next) => {
         productCount: c._count.products,
         createdAt: c.createdAt,
         updatedAt: c.updatedAt,
-      }))
-    );
+      })),
+      pagination: {
+        page,
+        limit,
+        total: totalCollections,
+        totalPages: Math.max(Math.ceil(totalCollections / limit), 1),
+      },
+    });
   } catch (err) {
     next(err);
   }
 });
+
 
 /**
  * ➕ Create collection (Admin)

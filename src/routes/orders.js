@@ -20,12 +20,16 @@ const addressSchema = z.object({
   phone: z.string(),
 });
 
+// In order controller (backend)
+
 const createOrderSchema = z.object({
   cartId: z.string(),
-  shippingAddress: addressSchema,
+  shippingAddressId: z.string().optional(), // <- changed from shippingAddress
   billingAddress: addressSchema.optional(),
+  shippingAddress: addressSchema.optional(),
   paymentMethod: z.string().optional(),
 });
+
 
 const cancelOrderSchema = z.object({
   reason: z.string().optional(),
@@ -123,13 +127,92 @@ router.get("/:id", isAuthenticated, async (req, res, next) => {
   }
 });
 
-// Create new order from cart
+// Create new order from cart ************* old code**********************
+// router.post("/", isAuthenticated, async (req, res, next) => {
+//   try {
+//     const parsed = createOrderSchema.parse(req.body);
+
+//     const { cartId, shippingAddress, billingAddress, paymentMethod } = parsed;
+
+//     const cart = await prisma.cart.findUnique({
+//       where: { id: cartId },
+//       include: { lines: { include: { product: true, variant: true } } },
+//     });
+
+//     if (!cart) return res.status(404).json({ error: "Cart not found" });
+//     if (cart.userId && cart.userId !== req.user.id)
+//       return res.status(403).json({ error: "Not authorized to access this cart" });
+//     if (cart.lines.length === 0) return res.status(400).json({ error: "Cart is empty" });
+
+//     const totalAmount = cart.lines.reduce(
+//       (sum, line) => sum + Number(line.priceAmount) * line.quantity,
+//       0
+//     );
+//     const currency = cart.lines[0].priceCurrency;
+//     const orderNumber = `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+
+//     const order = await prisma.$transaction(async (tx) => {
+//       const shippingAddrCreated = await tx.address.create({ data: { ...shippingAddress, userId: req.user.id } });
+//       const billingAddrCreated = billingAddress
+//         ? await tx.address.create({ data: { ...billingAddress, userId: req.user.id } })
+//         : shippingAddrCreated;
+
+//       const newOrder = await tx.order.create({
+//         data: {
+//           orderNumber,
+//           userId: req.user.id,
+//           status: "pending",
+//           totalAmount: totalAmount.toFixed(2),
+//           totalCurrency: currency,
+//           paymentMethod: paymentMethod || "cod",
+//           shippingAddressId: shippingAddrCreated.id,
+//           billingAddressId: billingAddrCreated.id,
+//           items: {
+//             create: cart.lines.map((line) => ({
+//               productId: line.productId,
+//               variantId: line.variantId,
+//               quantity: line.quantity,
+//               priceAmount: new Prisma.Decimal(line.priceAmount),
+//               priceCurrency: line.priceCurrency,
+//             })),
+//           },
+//         },
+//         include: {
+//           items: { include: { product: true, variant: true } },
+//           shippingAddress: true,
+//           billingAddress: true,
+//         },
+//       });
+
+//       await tx.cartLine.deleteMany({ where: { cartId } });
+//       await tx.cart.update({ where: { id: cartId }, data: { totalQuantity: 0 } });
+
+//       return newOrder;
+//     });
+
+//     res.status(201).json({
+//       id: order.id,
+//       status: order.status,
+//       createdAt: order.placedAt,
+//       totalAmount: order.totalAmount,
+//       totalCurrency: order.totalCurrency,
+//       shippingAddress: order.shippingAddress,
+//       billingAddress: order.billingAddress,
+//       items: order.items.map(mapOrderItem),
+//     });
+//   } catch (error) {
+//     if (error instanceof z.ZodError) return res.status(400).json({ error: error.errors });
+//     next(error);
+//   }
+// });
+
+
 router.post("/", isAuthenticated, async (req, res, next) => {
   try {
     const parsed = createOrderSchema.parse(req.body);
+    const { cartId, shippingAddress, billingAddress, shippingAddressId, billingAddressId, paymentMethod } = parsed;
 
-    const { cartId, shippingAddress, billingAddress, paymentMethod } = parsed;
-
+    // Fetch cart
     const cart = await prisma.cart.findUnique({
       where: { id: cartId },
       include: { lines: { include: { product: true, variant: true } } },
@@ -148,11 +231,32 @@ router.post("/", isAuthenticated, async (req, res, next) => {
     const orderNumber = `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
     const order = await prisma.$transaction(async (tx) => {
-      const shippingAddrCreated = await tx.address.create({ data: { ...shippingAddress, userId: req.user.id } });
-      const billingAddrCreated = billingAddress
-        ? await tx.address.create({ data: { ...billingAddress, userId: req.user.id } })
-        : shippingAddrCreated;
+      let shippingAddrId;
+      let billingAddrId;
 
+      // ----------------- SHIPPING ADDRESS -----------------
+      if (shippingAddressId) {
+        // Use existing address
+        shippingAddrId = shippingAddressId;
+      } else if (shippingAddress) {
+        // Create new address
+        const newShipping = await tx.address.create({ data: { ...shippingAddress, userId: req.user.id } });
+        shippingAddrId = newShipping.id;
+      } else {
+        throw new Error("Shipping address required");
+      }
+
+      // ----------------- BILLING ADDRESS -----------------
+      if (billingAddressId) {
+        billingAddrId = billingAddressId;
+      } else if (billingAddress) {
+        const newBilling = await tx.address.create({ data: { ...billingAddress, userId: req.user.id } });
+        billingAddrId = newBilling.id;
+      } else {
+        billingAddrId = shippingAddrId; // fallback to shipping
+      }
+
+      // ----------------- CREATE ORDER -----------------
       const newOrder = await tx.order.create({
         data: {
           orderNumber,
@@ -161,8 +265,8 @@ router.post("/", isAuthenticated, async (req, res, next) => {
           totalAmount: totalAmount.toFixed(2),
           totalCurrency: currency,
           paymentMethod: paymentMethod || "cod",
-          shippingAddressId: shippingAddrCreated.id,
-          billingAddressId: billingAddrCreated.id,
+          shippingAddressId: shippingAddrId,
+          billingAddressId: billingAddrId,
           items: {
             create: cart.lines.map((line) => ({
               productId: line.productId,
@@ -180,6 +284,7 @@ router.post("/", isAuthenticated, async (req, res, next) => {
         },
       });
 
+      // Clear cart
       await tx.cartLine.deleteMany({ where: { cartId } });
       await tx.cart.update({ where: { id: cartId }, data: { totalQuantity: 0 } });
 
@@ -201,6 +306,7 @@ router.post("/", isAuthenticated, async (req, res, next) => {
     next(error);
   }
 });
+
 
 // Cancel an order
 router.post("/:id/cancel", isAuthenticated, async (req, res, next) => {

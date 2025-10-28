@@ -15,6 +15,7 @@ import authRouter from "./routes/auth.js";
 import cartRouter from "./routes/cart.js";
 import addressesRouter from "./routes/addresses.js";
 import ordersRouter from "./routes/orders.js";
+import discountRouter from "./routes/discount.js";
 
 dotenv.config();
 
@@ -42,6 +43,7 @@ app.use("/auth", authRouter);
 app.use("/cart", cartRouter);
 app.use("/addresses", addressesRouter);
 app.use("/orders", ordersRouter);
+app.use("/discounts", discountRouter);
 
 // 404 handler
 app.use((req,res)=> res.status(404).json({error:"Not Found", path:req.path}));

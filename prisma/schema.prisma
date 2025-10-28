@@ -274,6 +274,7 @@ model Order {
   cancelReason      String?
 
   // discount 
+  discountAmount     Decimal?    @default(0) 
   appliedDiscountId  String?
   appliedDiscount    Discount? @relation("OrderDiscount", fields: [appliedDiscountId], references: [id])
   // 👆 Explicit relation name added here

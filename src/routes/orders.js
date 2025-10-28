@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { Prisma } from "@prisma/client";
+import { DiscountType, Prisma } from "@prisma/client";
 import prisma from "../lib/prisma.js";
 import { isAuthenticated } from "../middleware/auth.js";
 import { z } from "zod";
@@ -28,6 +28,8 @@ const createOrderSchema = z.object({
   billingAddress: addressSchema.optional(),
   shippingAddress: addressSchema.optional(),
   paymentMethod: z.string().optional(),
+  discountCode: z.string().optional(),
+
 });
 
 
@@ -127,92 +129,16 @@ router.get("/:id", isAuthenticated, async (req, res, next) => {
   }
 });
 
-// Create new order from cart ************* old code**********************
-// router.post("/", isAuthenticated, async (req, res, next) => {
-//   try {
-//     const parsed = createOrderSchema.parse(req.body);
-
-//     const { cartId, shippingAddress, billingAddress, paymentMethod } = parsed;
-
-//     const cart = await prisma.cart.findUnique({
-//       where: { id: cartId },
-//       include: { lines: { include: { product: true, variant: true } } },
-//     });
-
-//     if (!cart) return res.status(404).json({ error: "Cart not found" });
-//     if (cart.userId && cart.userId !== req.user.id)
-//       return res.status(403).json({ error: "Not authorized to access this cart" });
-//     if (cart.lines.length === 0) return res.status(400).json({ error: "Cart is empty" });
-
-//     const totalAmount = cart.lines.reduce(
-//       (sum, line) => sum + Number(line.priceAmount) * line.quantity,
-//       0
-//     );
-//     const currency = cart.lines[0].priceCurrency;
-//     const orderNumber = `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-
-//     const order = await prisma.$transaction(async (tx) => {
-//       const shippingAddrCreated = await tx.address.create({ data: { ...shippingAddress, userId: req.user.id } });
-//       const billingAddrCreated = billingAddress
-//         ? await tx.address.create({ data: { ...billingAddress, userId: req.user.id } })
-//         : shippingAddrCreated;
-
-//       const newOrder = await tx.order.create({
-//         data: {
-//           orderNumber,
-//           userId: req.user.id,
-//           status: "pending",
-//           totalAmount: totalAmount.toFixed(2),
-//           totalCurrency: currency,
-//           paymentMethod: paymentMethod || "cod",
-//           shippingAddressId: shippingAddrCreated.id,
-//           billingAddressId: billingAddrCreated.id,
-//           items: {
-//             create: cart.lines.map((line) => ({
-//               productId: line.productId,
-//               variantId: line.variantId,
-//               quantity: line.quantity,
-//               priceAmount: new Prisma.Decimal(line.priceAmount),
-//               priceCurrency: line.priceCurrency,
-//             })),
-//           },
-//         },
-//         include: {
-//           items: { include: { product: true, variant: true } },
-//           shippingAddress: true,
-//           billingAddress: true,
-//         },
-//       });
-
-//       await tx.cartLine.deleteMany({ where: { cartId } });
-//       await tx.cart.update({ where: { id: cartId }, data: { totalQuantity: 0 } });
-
-//       return newOrder;
-//     });
-
-//     res.status(201).json({
-//       id: order.id,
-//       status: order.status,
-//       createdAt: order.placedAt,
-//       totalAmount: order.totalAmount,
-//       totalCurrency: order.totalCurrency,
-//       shippingAddress: order.shippingAddress,
-//       billingAddress: order.billingAddress,
-//       items: order.items.map(mapOrderItem),
-//     });
-//   } catch (error) {
-//     if (error instanceof z.ZodError) return res.status(400).json({ error: error.errors });
-//     next(error);
-//   }
-// });
-
 
 router.post("/", isAuthenticated, async (req, res, next) => {
   try {
-    const parsed = createOrderSchema.parse(req.body);
-    const { cartId, shippingAddress, billingAddress, shippingAddressId, billingAddressId, paymentMethod } = parsed;
+    const parsed = createOrderSchema.extend({
+      discountCode: z.string().optional(),
+    }).parse(req.body);
 
-    // Fetch cart
+    const { cartId, shippingAddress, billingAddress, shippingAddressId, billingAddressId, paymentMethod, discountCode } = parsed;
+
+    // ----------------- FETCH CART -----------------
     const cart = await prisma.cart.findUnique({
       where: { id: cartId },
       include: { lines: { include: { product: true, variant: true } } },
@@ -223,23 +149,55 @@ router.post("/", isAuthenticated, async (req, res, next) => {
       return res.status(403).json({ error: "Not authorized to access this cart" });
     if (cart.lines.length === 0) return res.status(400).json({ error: "Cart is empty" });
 
-    const totalAmount = cart.lines.reduce(
+    let subtotal = cart.lines.reduce(
       (sum, line) => sum + Number(line.priceAmount) * line.quantity,
       0
     );
     const currency = cart.lines[0].priceCurrency;
+    let discountAmount = 0;
+    let appliedDiscount = null;
+
+
+    // ----------------- CHECK DISCOUNT CODE -----------------
+    if (discountCode) {
+      const discount = await prisma.discount.findFirst({
+        where: {
+          code: discountCode,
+          active: true,
+          startsAt: { lte: new Date() },
+          OR: [
+            { endsAt: null },
+            { endsAt: { gte: new Date() } },
+          ],
+        },
+      });
+
+        
+        if (discount) {
+          if (discount.type === DiscountType.PERCENTAGE) {
+          discountAmount = (subtotal * Number(discount.value)) / 100;
+          subtotal = subtotal - (subtotal * Number(discount.value)) / 100;
+        } else if (discount.type === DiscountType.FIXED) {
+          subtotal = Math.max(subtotal - Number(discount.value));
+          discountAmount = Math.max(discount.value,0);
+        }
+
+
+        appliedDiscount = discount;
+      }
+    }
+    const totalAmount = subtotal.toFixed(2);
     const orderNumber = `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
+    // ----------------- TRANSACTION -----------------
     const order = await prisma.$transaction(async (tx) => {
       let shippingAddrId;
       let billingAddrId;
 
       // ----------------- SHIPPING ADDRESS -----------------
       if (shippingAddressId) {
-        // Use existing address
         shippingAddrId = shippingAddressId;
       } else if (shippingAddress) {
-        // Create new address
         const newShipping = await tx.address.create({ data: { ...shippingAddress, userId: req.user.id } });
         shippingAddrId = newShipping.id;
       } else {
@@ -253,7 +211,7 @@ router.post("/", isAuthenticated, async (req, res, next) => {
         const newBilling = await tx.address.create({ data: { ...billingAddress, userId: req.user.id } });
         billingAddrId = newBilling.id;
       } else {
-        billingAddrId = shippingAddrId; // fallback to shipping
+        billingAddrId = shippingAddrId;
       }
 
       // ----------------- CREATE ORDER -----------------
@@ -262,11 +220,15 @@ router.post("/", isAuthenticated, async (req, res, next) => {
           orderNumber,
           userId: req.user.id,
           status: "pending",
-          totalAmount: totalAmount.toFixed(2),
+          totalAmount,
           totalCurrency: currency,
           paymentMethod: paymentMethod || "cod",
           shippingAddressId: shippingAddrId,
           billingAddressId: billingAddrId,
+          ...(appliedDiscount && {
+            appliedDiscountId: appliedDiscount.id,
+            discountAmount: discountAmount.toFixed(2),
+          }),
           items: {
             create: cart.lines.map((line) => ({
               productId: line.productId,
@@ -281,6 +243,7 @@ router.post("/", isAuthenticated, async (req, res, next) => {
           items: { include: { product: true, variant: true } },
           shippingAddress: true,
           billingAddress: true,
+          appliedDiscount: true,
         },
       });
 
@@ -291,18 +254,28 @@ router.post("/", isAuthenticated, async (req, res, next) => {
       return newOrder;
     });
 
+    // ----------------- RESPONSE -----------------
     res.status(201).json({
       id: order.id,
       status: order.status,
       createdAt: order.placedAt,
       totalAmount: order.totalAmount,
       totalCurrency: order.totalCurrency,
+      discount: order.appliedDiscount
+        ? {
+            code: order.appliedDiscount.code,
+            amount: order.discountAmount,
+          }
+        : null,
       shippingAddress: order.shippingAddress,
       billingAddress: order.billingAddress,
       items: order.items.map(mapOrderItem),
     });
   } catch (error) {
-    if (error instanceof z.ZodError) return res.status(400).json({ error: error.errors });
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: error.errors });
+    }
+    console.error(error);
     next(error);
   }
 });

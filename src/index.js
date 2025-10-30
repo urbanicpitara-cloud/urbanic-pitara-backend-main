@@ -16,25 +16,54 @@ import cartRouter from "./routes/cart.js";
 import addressesRouter from "./routes/addresses.js";
 import ordersRouter from "./routes/orders.js";
 import discountRouter from "./routes/discount.js";
+import tagsRouter from "./routes/tags.js";
 
 dotenv.config();
 
 const app = express();
 
-if(process.env.TRUST_PROXY) app.set("trust proxy",1);
+/* ✅ Always trust proxy in dev/tunnel environments */
+if (process.env.NODE_ENV !== "production" || process.env.TRUST_PROXY === "true") {
+  app.set("trust proxy", 1);
+}
 
-app.use(helmet({ crossOriginResourcePolicy:{policy:"cross-origin"} }));
-app.use(morgan(process.env.NODE_ENV==="production"?"combined":"dev"));
+/* ✅ Security, logging & performance middleware */
+app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
+app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 app.use(compression());
-app.use(cors({ origin: process.env.CORS_ORIGIN || "http://localhost:3000", credentials:true }));
+
+/* ✅ CORS configuration */
+const allowedOrigins = [
+  process.env.CORS_ORIGIN || "http://localhost:3000",
+  "http://localhost:3000",
+  /\.devtunnels\.ms$/, // ✅ allow any VS Code Dev Tunnel domain
+];
+
+app.use(
+  cors({
+    origin: allowedOrigins,
+    credentials: true,
+  })
+);
+
 app.use(cookieParser());
-app.use(express.json({limit:"1mb"}));
+app.use(express.json({ limit: "1mb" }));
 
-app.get("/health", (_req,res)=>res.json({ok:true}));
+/* ✅ Health check endpoint */
+app.get("/health", (_req, res) => res.json({ ok: true }));
 
-app.use(rateLimit({ windowMs:15*60*1000, max:1000, message:{error:"Too many requests"}}));
+/* ✅ Rate limiting */
+app.use(
+  rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 1000,
+    message: { error: "Too many requests" },
+    standardHeaders: true,
+    legacyHeaders: false,
+  })
+);
 
-// Routes
+/* ✅ Routes */
 app.use("/collections", collectionsRouter);
 app.use("/products", productsRouter);
 app.use("/search", searchRouter);
@@ -44,19 +73,25 @@ app.use("/cart", cartRouter);
 app.use("/addresses", addressesRouter);
 app.use("/orders", ordersRouter);
 app.use("/discounts", discountRouter);
+app.use("/tags", tagsRouter);
 
-// 404 handler
-app.use((req,res)=> res.status(404).json({error:"Not Found", path:req.path}));
+/* ✅ 404 handler */
+app.use((req, res) => res.status(404).json({ error: "Not Found", path: req.path }));
 
-// Error handler
-app.use((err,_req,res,_next)=>{
-  const status = err.status||500;
-  const message = err.message||"Internal Server Error";
+/* ✅ Centralized error handler */
+app.use((err, _req, res, _next) => {
+  const status = err.status || 500;
+  const message = err.message || "Internal Server Error";
   const response = { error: message };
-  if(process.env.NODE_ENV!=="production") response.stack=err.stack;
+
+  if (process.env.NODE_ENV !== "production") response.stack = err.stack;
+
   console.error(err);
   res.status(status).json(response);
 });
 
-const port = process.env.PORT||4000;
-app.listen(port, ()=> console.log(`API running on http://localhost:${port}`));
+/* ✅ Server startup */
+const port = process.env.PORT || 4000;
+app.listen(port, () => {
+  console.log(`✅ API running on http://localhost:${port}`);
+});

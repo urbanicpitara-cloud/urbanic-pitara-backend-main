@@ -7,6 +7,7 @@ const router = Router();
 /**
  * 🛍️ Get all products (with pagination, filtering, sorting)
  */
+
 router.get("/", async (req, res, next) => {
   try {
     const {
@@ -20,10 +21,13 @@ router.get("/", async (req, res, next) => {
       minPrice,
       maxPrice,
       published,
+      all, // 🆕 allow all=true or limit=all
     } = req.query;
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const take = parseInt(limit);
+    const fetchAll = all === "true" || limit === "all";
+
+    const skip = fetchAll ? 0 : (parseInt(page) - 1) * parseInt(limit);
+    const take = fetchAll ? undefined : parseInt(limit);
 
     const where = {};
 
@@ -50,10 +54,8 @@ router.get("/", async (req, res, next) => {
       });
 
       if (exactTag) {
-        // Exact tag match → filter by tag only
         where.tags = { some: { tagId: exactTag.id } };
       } else {
-        // Otherwise search in title/description
         where.OR = [
           { title: { contains: searchStr, mode: "insensitive" } },
           { description: { contains: searchStr, mode: "insensitive" } },
@@ -67,8 +69,10 @@ router.get("/", async (req, res, next) => {
 
     // Price filter
     const priceConditions = [];
-    if (minPrice) priceConditions.push({ minPriceAmount: { gte: parseFloat(minPrice ) } });
-    if (maxPrice) priceConditions.push({ maxPriceAmount: { lte: parseFloat(maxPrice ) } });
+    if (minPrice)
+      priceConditions.push({ minPriceAmount: { gte: parseFloat(minPrice) } });
+    if (maxPrice)
+      priceConditions.push({ maxPriceAmount: { lte: parseFloat(maxPrice) } });
     if (priceConditions.length > 0) {
       where.AND = where.AND ? [...where.AND, ...priceConditions] : priceConditions;
     }
@@ -81,7 +85,7 @@ router.get("/", async (req, res, next) => {
       where,
       skip,
       take,
-      orderBy: { [sort ]: (order ).toLowerCase() },
+      orderBy: { [sort]: order.toLowerCase() },
       include: {
         collection: { select: { id: true, handle: true, title: true } },
         images: true,
@@ -99,18 +103,21 @@ router.get("/", async (req, res, next) => {
 
     res.json({
       products: formatted,
-      pagination: {
-        total,
-        page: parseInt(page ),
-        limit: parseInt(limit ),
-        pages: Math.ceil(total / parseInt(limit)),
-      },
+      pagination: fetchAll
+        ? null
+        : {
+            total,
+            page: parseInt(page),
+            limit: parseInt(limit),
+            pages: Math.ceil(total / parseInt(limit)),
+          },
     });
   } catch (err) {
     console.error(err);
     next(err);
   }
 });
+
 
 
 

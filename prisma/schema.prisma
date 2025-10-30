@@ -20,6 +20,14 @@ enum OrderStatus {
   REFUNDED
 }
 
+enum PaymentStatus {
+  INITIATED
+  PAID
+  FAILED
+  REFUNDED
+  NONE
+}
+
 enum DiscountType {
   PERCENTAGE
   FIXED
@@ -172,23 +180,23 @@ model MenuItem {
 }
 
 model User {
-  id           String     @id @default(cuid())
-  email        String     @unique
-  passwordHash String
-  firstName    String?
-  lastName     String?
-  isAdmin      Boolean    @default(false)
-  phone        String?
-  addresses    Address[]
-  orders       Order[]
-  carts        Cart[]
-  wishlists    Wishlist[]
-  reviews      Review[]
-  resetToken        String?
-  resetTokenExpiry  DateTime?
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @default(now()) @updatedAt
-  deletedAt    DateTime? // soft-delete
+  id               String     @id @default(cuid())
+  email            String     @unique
+  passwordHash     String
+  firstName        String?
+  lastName         String?
+  isAdmin          Boolean    @default(false)
+  phone            String?
+  addresses        Address[]
+  orders           Order[]
+  carts            Cart[]
+  wishlists        Wishlist[]
+  reviews          Review[]
+  resetToken       String?
+  resetTokenExpiry DateTime?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @default(now()) @updatedAt
+  deletedAt        DateTime? // soft-delete
 
   @@index([email])
 }
@@ -252,7 +260,7 @@ model Order {
   userId String
 
   // Legacy - keep for now (string) so existing app doesn't break
-  status        String @default("PENDING")
+  status        OrderStatus? @default(PENDING)
   totalAmount   String
   totalCurrency String
 
@@ -274,9 +282,9 @@ model Order {
   cancelReason      String?
 
   // discount 
-  discountAmount     Decimal?    @default(0) 
-  appliedDiscountId  String?
-  appliedDiscount    Discount? @relation("OrderDiscount", fields: [appliedDiscountId], references: [id])
+  discountAmount    Decimal?  @default(0)
+  appliedDiscountId String?
+  appliedDiscount   Discount? @relation("OrderDiscount", fields: [appliedDiscountId], references: [id])
   // 👆 Explicit relation name added here
 
   // tracking/admin
@@ -391,7 +399,7 @@ model Discount {
   startsAt       DateTime?
   endsAt         DateTime?
   usageLimit     Int? // null = unlimited
-  orders         Order[]    @relation("OrderDiscount")
+  orders         Order[]      @relation("OrderDiscount")
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @default(now()) @updatedAt
 }
@@ -408,7 +416,7 @@ model Payment {
   providerPaymentId String?
   amount            Decimal  @db.Decimal(10, 2)
   currency          String
-  status            String // "INITIATED", "PAID", "FAILED", "REFUNDED"
+  status            PaymentStatus @default(NONE) // "INITIATED", "PAID", "FAILED", "REFUNDED" "NONE"
   rawResponse       Json? // store webhook payload if needed
   createdAt         DateTime @default(now())
   updatedAt         DateTime @default(now()) @updatedAt

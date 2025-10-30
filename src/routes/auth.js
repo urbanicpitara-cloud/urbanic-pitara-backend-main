@@ -253,4 +253,31 @@ router.post("/reset-password", async (req, res, next) => {
   }
 });
 
+// admin get all users
+
+router.get("/admin/all/users",isAuthenticated, async (req, res, next) => {
+  try {
+    if(!req.user.isAdmin){
+    return res.json({
+      success:false,
+      message:"not allowed admin only"
+    });
+
+    }
+
+    const users = await prisma.user.findMany();
+    if (!users)
+     {
+       return res.status(404).json({ message: "No users Found",users:[] });
+     }
+
+    res.json({
+      success:true,
+      users
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;

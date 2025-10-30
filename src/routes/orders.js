@@ -322,25 +322,32 @@ router.post("/:id/cancel", isAuthenticated, async (req, res, next) => {
 
 // ----------------------- ADMIN ROUTES ----------------------- //
 
-// Get all orders with pagination
+// Get all orders with pagination OR all at once
 router.get("/admin/all", isAuthenticated, async (req, res, next) => {
   try {
-    if (!req.user.isAdmin) return res.status(403).json({ error: "Not authorized" });
+    if (!req.user.isAdmin)
+      return res.status(403).json({ error: "Not authorized" });
 
-    const { status, page = 1, limit = 10 } = req.query;
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-
+    const { status, page = 1, limit = 10, all } = req.query;
     const where = {};
     if (status) where.status = status;
+
+    // 🧠 Determine if user requested all data
+    const fetchAll = all === "true" || limit === "all";
+
+    const skip = fetchAll ? 0 : (parseInt(page) - 1) * parseInt(limit);
+    const take = fetchAll ? undefined : parseInt(limit);
 
     const [orders, totalCount] = await Promise.all([
       prisma.order.findMany({
         where,
         orderBy: { placedAt: "desc" },
         skip,
-        take: parseInt(limit),
+        take,
         include: {
-          user: { select: { id: true, email: true, firstName: true, lastName: true } },
+          user: {
+            select: { id: true, email: true, firstName: true, lastName: true },
+          },
           items: { include: { product: true, variant: true } },
           shippingAddress: true,
           billingAddress: true,
@@ -361,17 +368,20 @@ router.get("/admin/all", isAuthenticated, async (req, res, next) => {
         billingAddress: order.billingAddress,
         items: order.items.map(mapOrderItem),
       })),
-      pagination: {
-        total: totalCount,
-        page: parseInt(page),
-        limit: parseInt(limit),
-        pages: Math.ceil(totalCount / parseInt(limit)),
-      },
+      pagination: fetchAll
+        ? null
+        : {
+            total: totalCount,
+            page: parseInt(page),
+            limit: parseInt(limit),
+            pages: Math.ceil(totalCount / parseInt(limit)),
+          },
     });
   } catch (error) {
     next(error);
   }
 });
+
 
 // Update order status (admin)
 router.put("/admin/:id/status", isAuthenticated, async (req, res, next) => {

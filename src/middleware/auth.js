@@ -19,6 +19,8 @@ export const isAuthenticated = async (req, res, next) => {
     const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : null;
     const token = cookieToken || bearer;
 
+    console.log("token :",token)
+
     if (!token) {
       return res.status(401).json({ error: "Authentication required" });
     }

@@ -62,8 +62,8 @@ model Product {
   vendor          String?
   description     String?
   descriptionHtml String?
-  collection      Collection @relation(fields: [collectionId], references: [id])
-  collectionId    String
+  collection      Collection? @relation(fields: [collectionId], references: [id])
+  collectionId    String?
 
   tags ProductTag[]
 
@@ -322,7 +322,7 @@ model OrderItem {
 model Tag {
   id          String       @id @default(cuid())
   handle      String       @unique
-  name        String
+  name        String       @unique
   description String?
   products    ProductTag[]
   createdAt   DateTime     @default(now())

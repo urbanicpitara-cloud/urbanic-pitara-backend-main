@@ -1,7 +1,7 @@
 import { Router } from "express";
 import prisma from "../lib/prisma.js";
 import { isAuthenticated, isAdmin } from "../middleware/auth.js";
-
+import { stripHtml } from "string-strip-html";
 const router = Router();
 
 /**
@@ -157,9 +157,8 @@ router.get("/:handle", async (req, res, next) => {
 router.post("/", isAuthenticated, isAdmin, async (req, res, next) => {
   try {
     const {
-      handle,
+      handle: providedHandle,
       title,
-      description,
       descriptionHtml,
       vendor,
       collectionId,
@@ -171,49 +170,89 @@ router.post("/", isAuthenticated, isAdmin, async (req, res, next) => {
       variants = [],
       published = true,
       metafields,
+      metaTitle,
+      metaDescription,
+      metaKeywords,
     } = req.body;
 
-    if (!handle || !title || !collectionId)
+    if (!title)
       return res
         .status(400)
-        .json({ error: "handle, title, and collectionId are required." });
+        .json({ error: "title is required." });
 
-    const existing = await prisma.product.findUnique({ where: { handle } });
-    if (existing)
-      return res.status(400).json({ error: "Handle already exists." });
+    // 🪄 Generate handle (slug) if not provided
+    let handle =
+      providedHandle ||
+      title
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
 
-    // calculate price range
+    // Ensure unique handle
+    const existingHandle = await prisma.product.findUnique({ where: { handle } });
+    if (existingHandle) {
+      handle = `${handle}-${Math.random().toString(36).substring(2, 6)}`;
+    }
+
+    // 📝 Extract plain text from descriptionHtml
+    const description = descriptionHtml
+      ? stripHtml(descriptionHtml).result.trim()
+      : "";
+
+    // 💰 Calculate price ranges
     const prices = variants.map((v) => parseFloat(v.priceAmount || "0"));
-    const minPriceAmount = prices.length ? Math.min(...prices).toString() : "0";
-    const maxPriceAmount = prices.length ? Math.max(...prices).toString() : "0";
-    const currency = variants[0]?.priceCurrency || "INR";
+    const minPriceAmount = prices.length ? Math.min(...prices) : 0;
+    const maxPriceAmount = prices.length ? Math.max(...prices) : 0;
 
+    const comparePrices = variants
+      .map((v) => parseFloat(v.compareAmount || "0"))
+      .filter((n) => !isNaN(n) && n > 0);
+
+    const compareMinAmount = comparePrices.length
+      ? Math.min(...comparePrices)
+      : null;
+    const compareMaxAmount = comparePrices.length
+      ? Math.max(...comparePrices)
+      : null;
+
+    const currency = variants[0]?.priceCurrency || "INR";
+    const compareCurrency = variants[0]?.compareCurrency || null;
+
+    // 🧱 Transaction
     const product = await prisma.$transaction(async (tx) => {
       const created = await tx.product.create({
         data: {
           handle,
           title,
-          description,
-          descriptionHtml,
           vendor,
           collectionId,
+          description,
+          descriptionHtml,
           featuredImageUrl,
           featuredImageAlt,
           published,
           publishedAt: published ? new Date() : null,
           metafields,
+          metaTitle,
+          metaDescription,
+          metaKeywords,
           minPriceAmount,
           minPriceCurrency: currency,
           maxPriceAmount,
           maxPriceCurrency: currency,
+          compareMinAmount,
+          compareMinCurrency: compareCurrency,
+          compareMaxAmount,
+          compareMaxCurrency: compareCurrency,
         },
       });
 
       if (images.length)
         await tx.productImage.createMany({
           data: images.map((img) => ({
-            url: img.url,
-            altText: img.altText,
+            url: img.url || img,
+            altText: img.altText || null,
             productId: created.id,
           })),
         });
@@ -239,14 +278,14 @@ router.post("/", isAuthenticated, isAdmin, async (req, res, next) => {
             productId: created.id,
             availableForSale: v.availableForSale ?? true,
             priceAmount: v.priceAmount,
-            priceCurrency: v.priceCurrency,
+            priceCurrency: v.priceCurrency || "INR",
             compareAmount: v.compareAmount,
             compareCurrency: v.compareCurrency,
             sku: v.sku,
             barcode: v.barcode,
             inventoryQuantity: v.inventoryQuantity || 0,
             weightInGrams: v.weightInGrams,
-            selectedOptions: v.selectedOptions,
+            selectedOptions: v.selectedOptions || [],
           })),
         });
 
@@ -291,60 +330,226 @@ router.post("/", isAuthenticated, isAdmin, async (req, res, next) => {
   }
 });
 
+
+
+/**
+ * ✏️ Bulk update products (Admin only)
+ * Body: { ids: string[], updates: Record<string, any> }
+ */
+router.put("/bulk-update", isAuthenticated, isAdmin, async (req, res, next) => {
+  try {
+    const { ids, updates } = req.body;
+
+    // 🧩 Validate input
+    if (!ids?.length)
+      return res.status(400).json({ error: "No product IDs provided." });
+
+    if (!updates || typeof updates !== "object")
+      return res.status(400).json({ error: "No update data provided." });
+
+    // 🧩 Define relational fields to handle separately
+    const relational = ["tags", "variants", "images", "options"];
+
+    // 🧩 Extract non-relational update data
+    const productUpdateData = Object.fromEntries(
+      Object.entries(updates).filter(([key]) => !relational.includes(key))
+    );
+
+    // ✅ Update scalar fields for all selected products
+    if (Object.keys(productUpdateData).length > 0) {
+      await prisma.product.updateMany({
+        where: { id: { in: ids } },
+        data: productUpdateData,
+      });
+    }
+
+    // ✅ Handle tags (merge new tags, don’t remove existing)
+    if (updates.tags && Array.isArray(updates.tags) && updates.tags.length > 0) {
+      await prisma.$transaction(async (tx) => {
+        // 1️⃣ Ensure all tags exist or create missing ones
+        const tags = [];
+        for (const tagHandle of updates.tags) {
+          let tag = await tx.tag.findUnique({ where: { handle: tagHandle } });
+          if (!tag) {
+            tag = await tx.tag.create({
+              data: {
+                handle: tagHandle,
+                name: tagHandle
+                  .replace(/-/g, " ")
+                  .replace(/\b\w/g, (l) => l.toUpperCase()),
+              },
+            });
+          }
+          tags.push(tag);
+        }
+
+        // 2️⃣ Attach tags to each selected product if not already linked
+        for (const id of ids) {
+          for (const tag of tags) {
+            const exists = await tx.productTag.findFirst({
+              where: { productId: id, tagId: tag.id },
+            });
+            if (!exists) {
+              await tx.productTag.create({
+                data: { productId: id, tagId: tag.id },
+              });
+            }
+          }
+        }
+      });
+    }
+
+    // ✅ Handle bulk price update for product variants
+    if (updates.priceAmount || updates.compareAmount) {
+      await prisma.productVariant.updateMany({
+        where: { productId: { in: ids } },
+        data: {
+          ...(updates.priceAmount && { priceAmount: updates.priceAmount }),
+          ...(updates.compareAmount && { compareAmount: updates.compareAmount }),
+        },
+      });
+    }
+
+    // ✅ Send response
+    res.json({
+      success: true,
+      message: `✅ Updated ${ids.length} product${ids.length > 1 ? "s" : ""} successfully.`,
+    });
+  } catch (err) {
+    console.error("❌ Bulk update failed:", err);
+    next(err);
+  }
+});
+
+
+
+
 /**
  * ✏️ Update product (Admin only)
  */
 router.put("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
   try {
     const { id } = req.params;
-    const data = req.body;
+    const {
+      title,
+      handle: providedHandle,
+      descriptionHtml,
+      vendor,
+      collectionId,
+      tags = [],
+      featuredImageUrl,
+      featuredImageAlt,
+      images = [],
+      options = [],
+      variants = [],
+      published,
+      metafields,
+      metaTitle,
+      metaDescription,
+      metaKeywords,
+    } = req.body;
 
-    const existing = await prisma.product.findUnique({ where: { id } });
+    const existing = await prisma.product.findUnique({
+      where: { id },
+      include: { images: true, options: true, variants: true, tags: true },
+    });
     if (!existing)
       return res.status(404).json({ error: "Product not found" });
 
-    const product = await prisma.$transaction(async (tx) => {
-      await tx.product.update({
+    // 🪄 Generate or validate handle (slug)
+    let handle =
+      providedHandle ||
+      title?.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") ||
+      existing.handle;
+
+    const existingHandle = await prisma.product.findUnique({
+      where: { handle },
+    });
+    if (existingHandle && existingHandle.id !== id) {
+      handle = `${handle}-${Math.random().toString(36).substring(2, 6)}`;
+    }
+
+    // 📝 Extract plain text from descriptionHtml
+    const description = descriptionHtml
+      ? stripHtml(descriptionHtml).result.trim()
+      : existing.description;
+
+    // 💰 Recalculate price ranges
+    const prices = variants.map((v) => parseFloat(v.priceAmount || "0"));
+    const minPriceAmount = prices.length ? Math.min(...prices) : existing.minPriceAmount;
+    const maxPriceAmount = prices.length ? Math.max(...prices) : existing.maxPriceAmount;
+
+    const comparePrices = variants
+      .map((v) => parseFloat(v.compareAmount || "0"))
+      .filter((n) => !isNaN(n) && n > 0);
+
+    const compareMinAmount = comparePrices.length
+      ? Math.min(...comparePrices)
+      : existing.compareMinAmount;
+    const compareMaxAmount = comparePrices.length
+      ? Math.max(...comparePrices)
+      : existing.compareMaxAmount;
+
+    const currency = variants[0]?.priceCurrency || existing.minPriceCurrency || "INR";
+    const compareCurrency = variants[0]?.compareCurrency || existing.compareMinCurrency;
+
+    // 🧱 Transaction for atomic update
+    const updated = await prisma.$transaction(async (tx) => {
+      // 1️⃣ Update base product
+      const product = await tx.product.update({
         where: { id },
         data: {
-          ...data,
-          publishedAt:
-            data.published !== undefined
-              ? data.published
-                ? new Date()
-                : null
-              : undefined,
+          title: title ?? existing.title,
+          handle,
+          vendor: vendor ?? existing.vendor,
+          collectionId: collectionId ?? existing.collectionId,
+          descriptionHtml: descriptionHtml ?? existing.descriptionHtml,
+          description,
+          featuredImageUrl: featuredImageUrl ?? existing.featuredImageUrl,
+          featuredImageAlt: featuredImageAlt ?? existing.featuredImageAlt,
+          published: published ?? existing.published,
+          metafields: metafields ?? existing.metafields,
+          metaTitle: metaTitle ?? existing.metaTitle,
+          metaDescription: metaDescription ?? existing.metaDescription,
+          metaKeywords: metaKeywords ?? existing.metaKeywords,
+          minPriceAmount,
+          minPriceCurrency: currency,
+          maxPriceAmount,
+          maxPriceCurrency: currency,
+          compareMinAmount,
+          compareMinCurrency: compareCurrency,
+          compareMaxAmount,
+          compareMaxCurrency: compareCurrency,
+          updatedAt: new Date(),
         },
       });
 
-      // Clean + recreate relational data if provided
-      if (data.images) {
+      // 2️⃣ Images — replace all
+      if (Array.isArray(images)) {
         await tx.productImage.deleteMany({ where: { productId: id } });
-        if (data.images.length)
+        if (images.length) {
           await tx.productImage.createMany({
-            data: data.images.map((i) => ({
-              url: i.url,
-              altText: i.altText,
+            data: images.map((img) => ({
+              url: img.url || img,
+              altText: img.altText || null,
               productId: id,
             })),
           });
+        }
       }
 
-      if (data.options) {
-        const optionIds = (
-          await tx.productOption.findMany({ where: { productId: id } })
-        ).map((o) => o.id);
-
+      // 3️⃣ Options and values — replace all
+      if (Array.isArray(options)) {
         await tx.productOptionValue.deleteMany({
-          where: { optionId: { in: optionIds } },
+          where: { option: { productId: id } },
         });
         await tx.productOption.deleteMany({ where: { productId: id } });
 
-        for (const option of data.options) {
+        for (const option of options) {
           const opt = await tx.productOption.create({
             data: { name: option.name, productId: id },
           });
-          if (option.values?.length)
+          if (option.values?.length) {
             await tx.productOptionValue.createMany({
               data: option.values.map((v) => ({
                 name: v.name,
@@ -352,32 +557,36 @@ router.put("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
                 optionId: opt.id,
               })),
             });
+          }
         }
       }
 
-      if (data.variants) {
+      // 4️⃣ Variants — replace all
+      if (Array.isArray(variants)) {
         await tx.productVariant.deleteMany({ where: { productId: id } });
-        if (data.variants.length)
+        if (variants.length) {
           await tx.productVariant.createMany({
-            data: data.variants.map((v) => ({
+            data: variants.map((v) => ({
               productId: id,
               availableForSale: v.availableForSale ?? true,
               priceAmount: v.priceAmount,
-              priceCurrency: v.priceCurrency,
+              priceCurrency: v.priceCurrency || "INR",
               compareAmount: v.compareAmount,
               compareCurrency: v.compareCurrency,
               sku: v.sku,
               barcode: v.barcode,
               inventoryQuantity: v.inventoryQuantity || 0,
               weightInGrams: v.weightInGrams,
-              selectedOptions: v.selectedOptions,
+              selectedOptions: v.selectedOptions || [],
             })),
           });
+        }
       }
 
-      if (data.tags) {
+      // 5️⃣ Tags — recreate if needed
+      if (Array.isArray(tags)) {
         await tx.productTag.deleteMany({ where: { productId: id } });
-        for (const tagHandle of data.tags) {
+        for (const tagHandle of tags) {
           let tag = await tx.tag.findUnique({ where: { handle: tagHandle } });
           if (!tag) {
             tag = await tx.tag.create({
@@ -394,10 +603,13 @@ router.put("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
           });
         }
       }
+
+      return product;
     });
 
-    const updated = await prisma.product.findUnique({
-      where: { id },
+    // 6️⃣ Fetch full updated product
+    const fullProduct = await prisma.product.findUnique({
+      where: { id: updated.id },
       include: {
         collection: true,
         images: true,
@@ -408,20 +620,81 @@ router.put("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
     });
 
     res.json({
-      ...updated,
-      tags: updated.tags.map((t) => t.tag),
+      ...fullProduct,
+      tags: fullProduct.tags.map((t) => t.tag),
     });
   } catch (err) {
+    console.error("Product update failed:", err);
     next(err);
   }
 });
+
+
+
+/**
+ * 🗑️ Bulk Delete Products (Admin only)
+ * Body: { ids: string[] }
+ */
+router.delete("/bulk-delete", isAuthenticated, isAdmin, async (req, res, next) => {
+  try {
+    const { ids } = req.body;
+
+    if (!ids?.length) {
+      return res.status(400).json({ error: "No product IDs provided." });
+    }
+
+    // ✅ Check all exist
+    const products = await prisma.product.findMany({
+      where: { id: { in: ids } },
+      select: { id: true },
+    });
+
+    if (products.length === 0) {
+      return res.status(404).json({ error: "No valid products found." });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // Delete child records first for referential integrity
+      await tx.productImage.deleteMany({ where: { productId: { in: ids } } });
+
+      const optionIds = (
+        await tx.productOption.findMany({ where: { productId: { in: ids } } })
+      ).map((o) => o.id);
+
+      if (optionIds.length)
+        await tx.productOptionValue.deleteMany({
+          where: { optionId: { in: optionIds } },
+        });
+
+      await tx.productOption.deleteMany({ where: { productId: { in: ids } } });
+      await tx.productVariant.deleteMany({ where: { productId: { in: ids } } });
+      await tx.productTag.deleteMany({ where: { productId: { in: ids } } });
+      await tx.cartLine.deleteMany({ where: { productId: { in: ids } } });
+      await tx.orderItem.deleteMany({ where: { productId: { in: ids } } });
+      await tx.product.deleteMany({ where: { id: { in: ids } } });
+    });
+
+    res.json({
+      success: true,
+      message: `🗑️ Deleted ${ids.length} product${ids.length > 1 ? "s" : ""} successfully.`,
+    });
+  } catch (err) {
+    console.error("❌ Bulk delete failed:", err);
+    next(err);
+  }
+});
+
+
+
 
 /**
  * ❌ Delete product (Admin only)
  */
 router.delete("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
   try {
+        
     const { id } = req.params;
+    console.log(id)
     const product = await prisma.product.findUnique({ where: { id } });
     if (!product)
       return res.status(404).json({ error: "Product not found" });
@@ -442,9 +715,9 @@ router.delete("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
       await tx.product.delete({ where: { id } });
     });
 
-    res.status(204).send();
+    res.status(200).json({success:true,message:"Product Deleted Successfully"});
   } catch (err) {
-    next(err);
+    res.json({success:false,message:"Some Error Occurred",err})
   }
 });
 
@@ -506,5 +779,8 @@ router.get("/:handle/related", async (req, res, next) => {
     next(err);
   }
 });
+
+
+
 
 export default router;

@@ -58,7 +58,7 @@ router.get("/:handle", async (req, res, next) => {
             variants: { take: 1 },
           },
           skip,
-          take: limit,
+          // take: all,
           orderBy: { title: "asc" },
         },
       },
@@ -283,6 +283,48 @@ router.post("/:id/products", isAuthenticated, isAdmin, async (req, res, next) =>
     next(err);
   }
 });
+
+
+/**
+ * 🧩 Add products to collection by rule (Admin)
+ */
+router.post("/:id/products/by-rule", isAuthenticated, isAdmin, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { titleContains, priceMin, priceMax, tags } = req.body;
+
+    const collection = await prisma.collection.findUnique({ where: { id } });
+    if (!collection) return res.status(404).json({ error: "Collection not found" });
+
+    // Build dynamic query
+    const where = {};
+    const AND = [];
+
+    if (titleContains) AND.push({ title: { contains: titleContains, mode: "insensitive" } });
+    if (priceMin !== undefined) AND.push({ minPriceAmount: { gte: priceMin } });
+    if (priceMax !== undefined) AND.push({ maxPriceAmount: { lte: priceMax } });
+    if (Array.isArray(tags) && tags.length > 0) {
+      AND.push({ tags: { some: { tag: { name: { in: tags } } } } });
+    }
+
+    if (AND.length) where.AND = AND;
+
+    const products = await prisma.product.findMany({ where });
+
+    if (!products.length)
+      return res.status(200).json({ message: "No products matched the criteria." });
+
+    await prisma.product.updateMany({
+      where: { id: { in: products.map(p => p.id) } },
+      data: { collectionId: id },
+    });
+
+    res.json({ message: "Products added by rule successfully", count: products.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
 
 /**
  * 🧹 Remove products from collection (Admin)

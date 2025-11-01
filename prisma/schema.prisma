@@ -33,6 +33,15 @@ enum DiscountType {
   FIXED
 }
 
+enum PaymentMethod {
+  COD        // Cash on delivery
+  STRIPE
+  RAZORPAY
+  PAYPAL
+  // add more providers as needed
+}
+
+
 /**
  * * MODELS **
  */
@@ -254,25 +263,66 @@ model CartLine {
 /**
  * * ORDERS **
  */
+// model Order {
+//   id     String @id @default(cuid())
+//   user   User   @relation(fields: [userId], references: [id])
+//   userId String
+
+//   // Legacy - keep for now (string) so existing app doesn't break
+//   status        OrderStatus? @default(PENDING)
+//   totalAmount   String
+//   totalCurrency String
+
+//   // NEW recommended fields (non-breaking). Backfill these, then switch code to use them.
+//   statusEnum         OrderStatus? @default(PENDING)
+//   totalAmountDecimal Decimal?     @db.Decimal(10, 2)
+//   totalCurrencyCode  String?
+
+//   orderNumber       String?
+//   paymentMethod     String?
+//   paymentId         String? // link to Payment model
+//   payment           Payment?
+//   placedAt          DateTime    @default(now())
+//   items             OrderItem[]
+//   shippingAddressId String?
+//   shippingAddress   Address?    @relation("Order_ShippingAddress", fields: [shippingAddressId], references: [id])
+//   billingAddressId  String?
+//   billingAddress    Address?    @relation("Order_BillingAddress", fields: [billingAddressId], references: [id])
+//   cancelReason      String?
+
+//   // discount 
+//   discountAmount    Decimal?  @default(0)
+//   appliedDiscountId String?
+//   appliedDiscount   Discount? @relation("OrderDiscount", fields: [appliedDiscountId], references: [id])
+//   // 👆 Explicit relation name added here
+
+//   // tracking/admin
+//   trackingNumber  String?
+//   trackingCompany String?
+//   adminNotes      String?
+
+//   createdAt DateTime @default(now())
+//   updatedAt DateTime @default(now()) @updatedAt
+
+//   @@index([userId])
+//   @@index([status])
+//   @@index([placedAt])
+// }
+
 model Order {
   id     String @id @default(cuid())
   user   User   @relation(fields: [userId], references: [id])
   userId String
 
-  // Legacy - keep for now (string) so existing app doesn't break
+  //   // Legacy - keep for now (string) so existing app doesn't break
   status        OrderStatus? @default(PENDING)
   totalAmount   String
   totalCurrency String
 
-  // NEW recommended fields (non-breaking). Backfill these, then switch code to use them.
-  statusEnum         OrderStatus? @default(PENDING)
-  totalAmountDecimal Decimal?     @db.Decimal(10, 2)
-  totalCurrencyCode  String?
-
   orderNumber       String?
-  paymentMethod     String?
   paymentId         String? // link to Payment model
   payment           Payment?
+
   placedAt          DateTime    @default(now())
   items             OrderItem[]
   shippingAddressId String?
@@ -281,13 +331,10 @@ model Order {
   billingAddress    Address?    @relation("Order_BillingAddress", fields: [billingAddressId], references: [id])
   cancelReason      String?
 
-  // discount 
   discountAmount    Decimal?  @default(0)
   appliedDiscountId String?
   appliedDiscount   Discount? @relation("OrderDiscount", fields: [appliedDiscountId], references: [id])
-  // 👆 Explicit relation name added here
 
-  // tracking/admin
   trackingNumber  String?
   trackingCompany String?
   adminNotes      String?
@@ -299,6 +346,7 @@ model Order {
   @@index([status])
   @@index([placedAt])
 }
+
 
 /**
  * * ORDER ITEMS **
@@ -407,23 +455,43 @@ model Discount {
 /**
  * * PAYMENTS **
  */
+// model Payment {
+//   id                String   @id @default(cuid())
+//   order             Order?   @relation(fields: [orderId], references: [id])
+//   orderId           String?  @unique // ✅ This makes it one-to-one
+//   provider          String // "razorpay", "stripe", etc.
+//   providerOrderId   String?
+//   providerPaymentId String?
+//   amount            Decimal  @db.Decimal(10, 2)
+//   currency          String
+//   status            PaymentStatus @default(NONE) // "INITIATED", "PAID", "FAILED", "REFUNDED" "NONE"
+//   rawResponse       Json? // store webhook payload if needed
+//   createdAt         DateTime @default(now())
+//   updatedAt         DateTime @default(now()) @updatedAt
+
+//   @@index([providerPaymentId])
+//   @@index([orderId])
+// }
+
 model Payment {
-  id                String   @id @default(cuid())
-  order             Order?   @relation(fields: [orderId], references: [id])
-  orderId           String?  @unique // ✅ This makes it one-to-one
-  provider          String // "razorpay", "stripe", etc.
+  id                String        @id @default(cuid())
+  order             Order?        @relation(fields: [orderId], references: [id])
+  orderId           String?       @unique
+  method            PaymentMethod // new enum field
+  provider          String?       // optional, e.g., "stripe", "razorpay"
   providerOrderId   String?
   providerPaymentId String?
-  amount            Decimal  @db.Decimal(10, 2)
+  amount            Decimal       @db.Decimal(10, 2)
   currency          String
   status            PaymentStatus @default(NONE) // "INITIATED", "PAID", "FAILED", "REFUNDED" "NONE"
-  rawResponse       Json? // store webhook payload if needed
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @default(now()) @updatedAt
+  rawResponse       Json?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @default(now()) @updatedAt
 
   @@index([providerPaymentId])
   @@index([orderId])
 }
+
 
 /**
  * * PAGES / CMS **

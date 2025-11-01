@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { DiscountType, Prisma } from "@prisma/client";
+import { DiscountType, OrderStatus, Prisma } from "@prisma/client";
 import prisma from "../lib/prisma.js";
-import { isAuthenticated } from "../middleware/auth.js";
+import { isAdmin, isAuthenticated } from "../middleware/auth.js";
 import { z } from "zod";
 
 const router = Router();
@@ -38,10 +38,26 @@ const cancelOrderSchema = z.object({
 });
 
 const updateStatusSchema = z.object({
-  status: z.enum(["pending", "processing", "shipped", "delivered", "canceled", "refunded"]),
+  status: z.enum([OrderStatus.PENDING, OrderStatus.DELIVERED,OrderStatus.CANCELED,OrderStatus.PROCESSING,OrderStatus.SHIPPED,OrderStatus.REFUNDED]),
   trackingNumber: z.string().optional(),
   trackingCompany: z.string().optional(),
   notes: z.string().optional(),
+});
+
+const updateOrderSchema = z.object({
+  status: z.enum(["PENDING", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELED", "REFUNDED"]).optional(),
+  trackingNumber: z.string().nullable().optional(),
+  trackingCompany: z.string().nullable().optional(),
+  adminNotes: z.string().nullable().optional(),
+  shippingAddressId: z.string().optional(),
+  billingAddressId: z.string().optional(),
+});
+
+
+const bulkUpdateOrdersSchema = z.object({
+  orderIds: z.array(z.string()),
+  status: z.enum(["PENDING", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELED", "REFUNDED"]).optional(),
+  adminNotes: z.string().nullable().optional(),
 });
 
 // ----------------------- HELPERS ----------------------- //
@@ -99,20 +115,29 @@ router.get("/", isAuthenticated, async (req, res, next) => {
   }
 });
 
-// Get specific order by ID
+// Get order by ID (accessible to admin or the user who owns it)
 router.get("/:id", isAuthenticated, async (req, res, next) => {
   try {
     const { id } = req.params;
-    const order = await prisma.order.findFirst({
-      where: { id, userId: req.user.id },
+
+    const order = await prisma.order.findUnique({
+      where: { id },
       include: {
+        user: {
+          select: { id: true, email: true, firstName: true, lastName: true },
+        },
         items: { include: { product: true, variant: true } },
         shippingAddress: true,
         billingAddress: true,
       },
     });
 
-    if (!order) return res.status(404).json({ error: "Order not found" });
+    if (!order) return res.status(404).json({ error: "Order not found bhai" });
+
+    // 🔐 Security: allow if admin OR order belongs to the current user
+    if (!req.user.isAdmin && order.userId !== req.user.id) {
+      return res.status(403).json({ error: "Not authorized to view this order" });
+    }
 
     res.json({
       id: order.id,
@@ -120,9 +145,13 @@ router.get("/:id", isAuthenticated, async (req, res, next) => {
       createdAt: order.placedAt,
       totalAmount: order.totalAmount,
       totalCurrency: order.totalCurrency,
+      user: order.user,
       shippingAddress: order.shippingAddress,
       billingAddress: order.billingAddress,
       items: order.items.map(mapOrderItem),
+      trackingNumber: order.trackingNumber,
+      trackingCompany: order.trackingCompany,
+      adminNotes: order.adminNotes,
     });
   } catch (error) {
     next(error);
@@ -133,7 +162,7 @@ router.get("/:id", isAuthenticated, async (req, res, next) => {
 router.post("/", isAuthenticated, async (req, res, next) => {
   try {
     const parsed = createOrderSchema.extend({
-      discountCode: z.string().optional(),
+      discountCode: z.string().nullable().optional(),
     }).parse(req.body);
 
     const { cartId, shippingAddress, billingAddress, shippingAddressId, billingAddressId, paymentMethod, discountCode } = parsed;
@@ -157,7 +186,6 @@ router.post("/", isAuthenticated, async (req, res, next) => {
     let discountAmount = 0;
     let appliedDiscount = null;
 
-
     // ----------------- CHECK DISCOUNT CODE -----------------
     if (discountCode) {
       const discount = await prisma.discount.findFirst({
@@ -165,32 +193,27 @@ router.post("/", isAuthenticated, async (req, res, next) => {
           code: discountCode,
           active: true,
           startsAt: { lte: new Date() },
-          OR: [
-            { endsAt: null },
-            { endsAt: { gte: new Date() } },
-          ],
+          OR: [{ endsAt: null }, { endsAt: { gte: new Date() } }],
         },
       });
 
-        
-        if (discount) {
-          if (discount.type === DiscountType.PERCENTAGE) {
+      if (discount) {
+        if (discount.type === DiscountType.PERCENTAGE) {
           discountAmount = (subtotal * Number(discount.value)) / 100;
-          subtotal = subtotal - (subtotal * Number(discount.value)) / 100;
+          subtotal -= discountAmount;
         } else if (discount.type === DiscountType.FIXED) {
-          subtotal = Math.max(subtotal - Number(discount.value));
-          discountAmount = Math.max(discount.value,0);
+          discountAmount = Math.min(Number(discount.value), subtotal);
+          subtotal -= discountAmount;
         }
-
-
         appliedDiscount = discount;
       }
     }
+
     const totalAmount = subtotal.toFixed(2);
     const orderNumber = `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
     // ----------------- TRANSACTION -----------------
-    const order = await prisma.$transaction(async (tx) => {
+    const orderWithPayment = await prisma.$transaction(async (tx) => {
       let shippingAddrId;
       let billingAddrId;
 
@@ -219,10 +242,9 @@ router.post("/", isAuthenticated, async (req, res, next) => {
         data: {
           orderNumber,
           userId: req.user.id,
-          status: "pending",
+          status: OrderStatus.PENDING,
           totalAmount,
           totalCurrency: currency,
-          paymentMethod: paymentMethod || "cod",
           shippingAddressId: shippingAddrId,
           billingAddressId: billingAddrId,
           ...(appliedDiscount && {
@@ -247,29 +269,43 @@ router.post("/", isAuthenticated, async (req, res, next) => {
         },
       });
 
-      // Clear cart
+      // ----------------- CREATE PAYMENT -----------------
+      const newPayment = await tx.payment.create({
+        data: {
+          orderId: newOrder.id,
+          method: paymentMethod?.toUpperCase() || "COD",
+          amount: new Prisma.Decimal(totalAmount),
+          currency,
+          status: paymentMethod?.toUpperCase() === "COD" ? "INITIATED" : "PAID",
+        },
+      });
+
+      // ----------------- CLEAR CART -----------------
       await tx.cartLine.deleteMany({ where: { cartId } });
       await tx.cart.update({ where: { id: cartId }, data: { totalQuantity: 0 } });
 
-      return newOrder;
+      return { ...newOrder, payment: newPayment };
     });
 
     // ----------------- RESPONSE -----------------
     res.status(201).json({
-      id: order.id,
-      status: order.status,
-      createdAt: order.placedAt,
-      totalAmount: order.totalAmount,
-      totalCurrency: order.totalCurrency,
-      discount: order.appliedDiscount
-        ? {
-            code: order.appliedDiscount.code,
-            amount: order.discountAmount,
-          }
+      id: orderWithPayment.id,
+      status: orderWithPayment.status,
+      createdAt: orderWithPayment.placedAt,
+      totalAmount: orderWithPayment.totalAmount,
+      totalCurrency: orderWithPayment.totalCurrency,
+      discount: orderWithPayment.appliedDiscount
+        ? { code: orderWithPayment.appliedDiscount.code, amount: orderWithPayment.discountAmount }
         : null,
-      shippingAddress: order.shippingAddress,
-      billingAddress: order.billingAddress,
-      items: order.items.map(mapOrderItem),
+      payment: {
+        method: orderWithPayment.payment.method,
+        status: orderWithPayment.payment.status,
+        amount: orderWithPayment.payment.amount,
+        currency: orderWithPayment.payment.currency,
+      },
+      shippingAddress: orderWithPayment.shippingAddress,
+      billingAddress: orderWithPayment.billingAddress,
+      items: orderWithPayment.items.map(mapOrderItem),
     });
   } catch (error) {
     if (error instanceof z.ZodError) {
@@ -279,6 +315,7 @@ router.post("/", isAuthenticated, async (req, res, next) => {
     next(error);
   }
 });
+
 
 
 // Cancel an order
@@ -323,12 +360,10 @@ router.post("/:id/cancel", isAuthenticated, async (req, res, next) => {
 // ----------------------- ADMIN ROUTES ----------------------- //
 
 // Get all orders with pagination OR all at once
-router.get("/admin/all", isAuthenticated, async (req, res, next) => {
+router.get("/admin/all", isAuthenticated,isAdmin, async (req, res, next) => {
   try {
-    if (!req.user.isAdmin)
-      return res.status(403).json({ error: "Not authorized" });
-
-    const { status, page = 1, limit = 10, all } = req.query;
+    
+    const { status, page = 1, limit = 10, all,images=false } = req.query;
     const where = {};
     if (status) where.status = status;
 
@@ -353,7 +388,7 @@ router.get("/admin/all", isAuthenticated, async (req, res, next) => {
           billingAddress: true,
         },
       }),
-      prisma.order.count({ where }),
+      // prisma.order.count({ where }),
     ]);
 
     res.json({
@@ -381,6 +416,84 @@ router.get("/admin/all", isAuthenticated, async (req, res, next) => {
     next(error);
   }
 });
+
+
+
+router.put("/admin/bulk-update", isAuthenticated, isAdmin, async (req, res, next) => {
+  try {
+    const parsed = bulkUpdateOrdersSchema.parse(req.body);
+
+    const { orderIds, ...data } = parsed;
+
+    const updatedOrders = await prisma.order.updateMany({
+      where: { id: { in: orderIds } },
+      data,
+    });
+
+    res.json({
+      message: `${updatedOrders.count} orders updated successfully`,
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) return res.status(400).json({ error: error.errors });
+    next(error);
+  }
+});
+
+
+
+router.put("/admin/:id", isAuthenticated, isAdmin, async (req, res, next) => {
+  try {
+    const parsed = updateOrderSchema.parse(req.body);
+    const { id } = req.params;
+
+    const updatedOrder = await prisma.order.update({
+      where: { id },
+      data: parsed,
+      include: {
+        user: { select: { id: true, email: true, firstName: true, lastName: true } },
+        items: { include: { product: true, variant: true } },
+        shippingAddress: true,
+        billingAddress: true,
+      },
+    });
+
+    res.json({
+      id: updatedOrder.id,
+      status: updatedOrder.status,
+      createdAt: updatedOrder.placedAt,
+      totalAmount: updatedOrder.totalAmount,
+      totalCurrency: updatedOrder.totalCurrency,
+      trackingNumber: updatedOrder.trackingNumber,
+      trackingCompany: updatedOrder.trackingCompany,
+      adminNotes: updatedOrder.adminNotes,
+      user: updatedOrder.user,
+      shippingAddress: updatedOrder.shippingAddress,
+      billingAddress: updatedOrder.billingAddress,
+      items: updatedOrder.items.map((item) => ({
+        id: item.id,
+        quantity: item.quantity,
+        product: {
+          id: item.product.id,
+          title: item.product.title,
+        },
+        variant: item.variant
+          ? { id: item.variant.id, selectedOptions: item.variant.selectedOptions }
+          : null,
+        price: { amount: item.priceAmount, currencyCode: item.priceCurrency },
+        subtotal: {
+          amount: (Number(item.priceAmount) * item.quantity).toFixed(2),
+          currencyCode: item.priceCurrency,
+        },
+      })),
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) return res.status(400).json({ error: error.errors });
+    next(error);
+  }
+});
+
+
+
 
 
 // Update order status (admin)

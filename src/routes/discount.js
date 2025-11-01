@@ -1,6 +1,6 @@
 import { Router } from "express";
 import prisma from "../lib/prisma.js";
-import { isAuthenticated } from "../middleware/auth.js";
+import { isAdmin, isAuthenticated } from "../middleware/auth.js";
 
 const router = Router();
 
@@ -50,6 +50,8 @@ router.post("/validate", async (req, res, next) => {
   }
 });
 
+
+
 /**
  * 💰 Calculate discounted total
  * (Can be called on checkout confirm or internally in createOrder)
@@ -98,9 +100,8 @@ router.post("/create", isAuthenticated, async (req, res, next) => {
 /**
  * 🧾 ADMIN: List all discounts
  */
-router.get("/all", isAuthenticated, async (req, res, next) => {
+router.get("/all", isAuthenticated,isAdmin, async (req, res, next) => {
   try {
-    if (!req.user.isAdmin) return res.status(403).json({ error: "Not authorized" });
     const discounts = await prisma.discount.findMany({
       orderBy: { createdAt: "desc" },
     });
@@ -111,11 +112,31 @@ router.get("/all", isAuthenticated, async (req, res, next) => {
 });
 
 /**
+ * 📝 ADMIN: Get single discount by ID
+ */
+router.get("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const discount = await prisma.discount.findUnique({
+      where: { id },
+    });
+
+    if (!discount) {
+      return res.status(404).json({ error: "Discount not found" });
+    }
+
+    res.json(discount);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
  * ✏️ ADMIN: Update discount
  */
-router.patch("/:id", isAuthenticated, async (req, res, next) => {
+router.patch("/:id", isAuthenticated,isAdmin, async (req, res, next) => {
   try {
-    if (!req.user.isAdmin) return res.status(403).json({ error: "Not authorized" });
 
     const { id } = req.params;
     const { description, active, value, type, minOrderAmount, startsAt, endsAt } = req.body;

@@ -42,23 +42,23 @@ router.get("/", async (req, res, next) => {
 router.get("/:handle", async (req, res, next) => {
   try {
     const { handle } = req.params;
-    const page = Math.max(parseInt(req.query.page) || 1, 1);
-    const limit = Math.max(parseInt(req.query.limit ) || 8, 1);
-    const skip = (page - 1) * limit;
+    const page = req.query.page ? Math.max(parseInt(req.query.page ), 1) : null;
+    const limit = req.query.limit ? Math.max(parseInt(req.query.limit), 1) : null;
+    const skip = page && limit ? (page - 1) * limit : undefined;
 
     // Fetch collection
     const collection = await prisma.collection.findUnique({
       where: { handle },
       include: {
         products: {
-          // where: { published: true },
           include: {
             images: true,
             tags: { include: { tag: true } },
-            variants: { take: 1 },
+            variants: true,
+            options: { include: { values: true } },
           },
           skip,
-          // take: all,
+          take: limit || undefined, // fetch all if limit not provided
           orderBy: { title: "asc" },
         },
       },
@@ -68,7 +68,7 @@ router.get("/:handle", async (req, res, next) => {
 
     // Count total products
     const totalProducts = await prisma.product.count({
-      where: { collectionId: collection.id, },
+      where: { collectionId: collection.id },
     });
 
     res.json({
@@ -88,20 +88,26 @@ router.get("/:handle", async (req, res, next) => {
         images: p.images,
         minPriceAmount: p.minPriceAmount,
         maxPriceAmount: p.maxPriceAmount,
+        compareMaxAmount: p.compareMaxAmount,
+        compareMinAmount: p.compareMinAmount,
         priceCurrency: p.minPriceCurrency,
+        variants: p.variants,
         tags: p.tags.map((t) => t.tag.name),
       })),
-      pagination: {
-        page,
-        limit,
-        total: totalProducts,
-        totalPages: Math.max(Math.ceil(totalProducts / limit), 1),
-      },
+      pagination: page && limit
+        ? {
+            page,
+            limit,
+            total: totalProducts,
+            totalPages: Math.max(Math.ceil(totalProducts / limit), 1),
+          }
+        : undefined, // no pagination info if fetching all
     });
   } catch (err) {
     next(err);
   }
 });
+
 
 /**
  * 👑 Get all collections (Admin) with pagination

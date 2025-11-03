@@ -201,4 +201,38 @@ router.delete("/:id", isAuthenticated, async (req, res, next) => {
   }
 });
 
+// DELETE /tags - bulk delete tags (admin)
+router.delete("/", isAuthenticated, async (req, res, next) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+
+    // Expect array of tag IDs in body
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: "No tag IDs provided" });
+    }
+
+    // Ensure all IDs are strings
+    const tagIds = ids.map(String);
+
+    // Delete related product-tag relations first
+    await prisma.productTag.deleteMany({
+      where: { tagId: { in: tagIds } },
+    });
+
+    // Delete the tags
+    const deleted = await prisma.tag.deleteMany({
+      where: { id: { in: tagIds } },
+    });
+
+    res.json({
+      message: `Deleted ${deleted.count} tags successfully`,
+      deletedCount: deleted.count,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+
 export default router;

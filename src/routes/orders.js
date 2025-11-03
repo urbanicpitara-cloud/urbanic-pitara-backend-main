@@ -327,12 +327,12 @@ router.post("/:id/cancel", isAuthenticated, async (req, res, next) => {
 
     const order = await prisma.order.findFirst({ where: { id, userId: req.user.id } });
     if (!order) return res.status(404).json({ error: "Order not found" });
-    if (!["pending", "processing"].includes(order.status))
+    if (!["PENDING", "PROCESSING"].includes(order.status))
       return res.status(400).json({ error: "Cannot cancel order in its current status" });
 
     const updatedOrder = await prisma.order.update({
       where: { id },
-      data: { status: "canceled", cancelReason: reason || "Canceled by customer" },
+      data: { status: "CANCELED", cancelReason: reason || "Canceled by customer" },
       include: {
         items: { include: { product: true, variant: true } },
         shippingAddress: true,

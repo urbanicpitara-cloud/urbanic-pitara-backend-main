@@ -66,17 +66,31 @@ export const generateToken = (userId) => {
 };
 
 export const setAuthCookie = (res, token) => {
+  const domain = process.env.NODE_ENV === 'production' 
+    ? '.render.com'  // Adjust this to match your Render.com domain
+    : 'localhost';
+
   // Set HTTP-only cookie with token
   res.cookie('token', token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+    domain: process.env.NODE_ENV === 'production' ? domain : undefined,
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   });
 };
 
 export const clearAuthCookie = (res) => {
-  res.clearCookie('token');
+  const domain = process.env.NODE_ENV === 'production' 
+    ? '.render.com'  // Adjust this to match your Render.com domain
+    : 'localhost';
+
+  res.clearCookie('token', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+    domain: process.env.NODE_ENV === 'production' ? domain : undefined,
+  });
 };
 
 

@@ -37,13 +37,33 @@ app.use(compression());
 const allowedOrigins = [
   process.env.CORS_ORIGIN || "http://localhost:3000",
   "http://localhost:3000",
-  /\.devtunnels\.ms$/, // ✅ allow any VS Code Dev Tunnel domain
+  /\.vercel\.app$/,  // Allow Vercel domains
+  /\.devtunnels\.ms$/,  // Allow VS Code Dev Tunnel domains
 ];
 
 app.use(
   cors({
-    origin: allowedOrigins,
+    origin: function(origin, callback) {
+      // Allow requests with no origin (like mobile apps, curl, etc.)
+      if (!origin) return callback(null, true);
+      
+      // Check if origin is allowed
+      const isAllowed = allowedOrigins.some(allowed => {
+        if (allowed instanceof RegExp) {
+          return allowed.test(origin);
+        }
+        return allowed === origin;
+      });
+      
+      if (isAllowed) {
+        callback(null, true);
+      } else {
+        callback(new Error('CORS not allowed'));
+      }
+    },
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
 
@@ -95,5 +115,5 @@ app.use((err, _req, res, _next) => {
 /* ✅ Server startup */
 const port = process.env.PORT || 4000;
 app.listen(port, () => {
-  console.log(`✅ API running on http://localhost:${port}`);
+  console.log(`✅ API running on http://localhost:${ port}`);
 });

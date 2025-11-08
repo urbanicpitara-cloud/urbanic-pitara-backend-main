@@ -453,26 +453,8 @@ model Discount {
 }
 
 /**
- * * PAYMENTS **
+ * * SUBSCRIBERS / NEWSLETTER **
  */
-// model Payment {
-//   id                String   @id @default(cuid())
-//   order             Order?   @relation(fields: [orderId], references: [id])
-//   orderId           String?  @unique // ✅ This makes it one-to-one
-//   provider          String // "razorpay", "stripe", etc.
-//   providerOrderId   String?
-//   providerPaymentId String?
-//   amount            Decimal  @db.Decimal(10, 2)
-//   currency          String
-//   status            PaymentStatus @default(NONE) // "INITIATED", "PAID", "FAILED", "REFUNDED" "NONE"
-//   rawResponse       Json? // store webhook payload if needed
-//   createdAt         DateTime @default(now())
-//   updatedAt         DateTime @default(now()) @updatedAt
-
-//   @@index([providerPaymentId])
-//   @@index([orderId])
-// }
-
 model Payment {
   id                String        @id @default(cuid())
   order             Order?        @relation(fields: [orderId], references: [id])
@@ -506,6 +488,17 @@ model Page {
   published       Boolean  @default(true)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @default(now()) @updatedAt
+}
+
+// Subscribers (newsletter signups)
+model Subscriber {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  source    String?  // e.g. "footer", "home"
+  verified  Boolean  @default(false)
+  meta      Json?    // optional metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
 }
 
 /**

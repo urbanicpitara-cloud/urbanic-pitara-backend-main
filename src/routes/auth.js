@@ -2,6 +2,7 @@ import { Router } from "express";
 import prisma from "../lib/prisma.js";
 import bcrypt from "bcrypt";
 import { randomBytes } from "crypto";
+import nodemailer from "nodemailer";
 import {
   isAuthenticated,
   generateToken,
@@ -20,6 +21,45 @@ const sanitizeUser = (user) => {
 
 /** Utility to validate email and password strength */
 const isStrongPassword = (password) => password.length >= 6; // You can use zxcvbn or stricter rules
+
+/**
+ * Helper: sendResetEmail
+ * Uses SMTP configuration from environment variables:
+ * SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, FROM_EMAIL
+ * If SMTP isn't configured, it falls back to logging the reset link (developer mode).
+ */
+async function sendResetEmail({ to, resetLink }) {
+  const host = process.env.SMTP_HOST;
+  const port = process.env.SMTP_PORT ? parseInt(process.env.SMTP_PORT, 10) : undefined;
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+  const from = process.env.FROM_EMAIL || user || `no-reply@${process.env.FRONTEND_URL?.replace(/^https?:\/\//, '') || 'localhost'}`;
+
+  if (!host || !user || !pass) {
+    console.warn('SMTP not configured. Falling back to console output for reset link.');
+    console.log('Password reset link:', resetLink);
+    return;
+  }
+
+  const secure = process.env.SMTP_SECURE === 'true' || (port === 465);
+
+  const transporter = nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    auth: { user, pass },
+  });
+
+  const mailOptions = {
+    from,
+    to,
+    subject: 'Password reset request',
+    text: `You requested a password reset. Use the link below to reset your password:\n\n${resetLink}\n\nIf you didn't request this, you can ignore this email.`,
+    html: `<p>You requested a password reset. Click the link below to reset your password:</p><p><a href="${resetLink}">Reset password</a></p><p>If you didn't request this, you can ignore this email.</p>`,
+  };
+
+  await transporter.sendMail(mailOptions);
+}
 
 /**
  * 🧾 Register / Signup
@@ -193,14 +233,26 @@ router.post("/forgot-password", async (req, res, next) => {
     // Construct frontend reset link
     const resetLink = `${process.env.FRONTEND_URL || "http://localhost:3000"}/reset-password?token=${resetToken}`;
 
-    // TODO: send via email (for now, return link for development)
-    console.log("passoword reset link : ")
-    console.log("🔗 Password reset link:", resetLink);
+    // Try to send the reset link via email. Use SMTP config from env vars.
+    // If SMTP is not configured, fall back to logging the link (developer mode).
+    try {
+      await sendResetEmail({
+        to: user.email,
+        resetLink,
+      });
 
-    res.json({
-      message: "Password reset link generated.",
-      resetLink, // Only for dev; remove when emailing
-    });
+      // In production don't return the reset link in the response.
+      const includeLink = process.env.NODE_ENV !== "production";
+      res.json({
+        message: "Password reset link generated.",
+        ...(includeLink ? { resetLink } : {}),
+      });
+    } catch (emailErr) {
+      // If sending fails, log for debugging and still return generic success
+      console.error("Failed to send reset email:", emailErr);
+      console.log("🔗 Password reset link (fallback):", resetLink);
+      res.json({ message: "Password reset link generated." });
+    }
   } catch (err) {
     next(err);
   }

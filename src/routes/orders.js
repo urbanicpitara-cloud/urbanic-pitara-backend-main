@@ -24,12 +24,23 @@ const addressSchema = z.object({
 
 const createOrderSchema = z.object({
   cartId: z.string(),
-  shippingAddressId: z.string().optional(), // <- changed from shippingAddress
+  shippingAddressId: z.string().optional(),
   billingAddress: addressSchema.optional(),
   shippingAddress: addressSchema.optional(),
   paymentMethod: z.string().optional(),
   discountCode: z.string().optional(),
-
+  // Optional client-side snapshot of cart lines (used as a safe fallback when server cart is empty)
+  cartSnapshot: z
+    .array(
+      z.object({
+        productId: z.string(),
+        variantId: z.string().nullable().optional(),
+        quantity: z.number().int().min(1),
+        priceAmount: z.number(),
+        priceCurrency: z.string(),
+      })
+    )
+    .optional(),
 });
 
 
@@ -95,6 +106,7 @@ router.get("/", isAuthenticated, async (req, res, next) => {
         items: { include: { product: true, variant: true } },
         shippingAddress: true,
         billingAddress: true,
+        payment: true,
       },
     });
 
@@ -107,6 +119,15 @@ router.get("/", isAuthenticated, async (req, res, next) => {
         totalCurrency: order.totalCurrency,
         shippingAddress: order.shippingAddress,
         billingAddress: order.billingAddress,
+        payment: order.payment ? {
+          id: order.payment.id,
+          status: order.payment.status,
+          method: order.payment.method,
+          provider: order.payment.provider,
+          amount: order.payment.amount,
+          currency: order.payment.currency,
+          createdAt: order.payment.createdAt,
+        } : null,
         items: order.items.map(mapOrderItem),
       }))
     );
@@ -129,6 +150,7 @@ router.get("/:id", isAuthenticated, async (req, res, next) => {
         items: { include: { product: true, variant: true } },
         shippingAddress: true,
         billingAddress: true,
+        payment: true,
       },
     });
 
@@ -148,6 +170,16 @@ router.get("/:id", isAuthenticated, async (req, res, next) => {
       user: order.user,
       shippingAddress: order.shippingAddress,
       billingAddress: order.billingAddress,
+      payment: order.payment ? {
+        id: order.payment.id,
+        status: order.payment.status,
+        method: order.payment.method,
+        provider: order.payment.provider,
+        amount: order.payment.amount,
+        currency: order.payment.currency,
+        createdAt: order.payment.createdAt,
+        rawResponse: order.payment.rawResponse,
+      } : null,
       items: order.items.map(mapOrderItem),
       trackingNumber: order.trackingNumber,
       trackingCompany: order.trackingCompany,
@@ -176,13 +208,35 @@ router.post("/", isAuthenticated, async (req, res, next) => {
     if (!cart) return res.status(404).json({ error: "Cart not found" });
     if (cart.userId && cart.userId !== req.user.id)
       return res.status(403).json({ error: "Not authorized to access this cart" });
-    if (cart.lines.length === 0) return res.status(400).json({ error: "Cart is empty" });
 
-    let subtotal = cart.lines.reduce(
+    // If server cart is empty, allow an optional client-provided snapshot as a fallback.
+    // This helps when the client has an up-to-date cart UI but the server cart is stale
+    // (for example when using client-side carts). The snapshot must be provided by the client
+    // and will be used only when server cart has no lines.
+    let cartLinesSource = cart.lines;
+
+    if ((!cart.lines || cart.lines.length === 0) && parsed.cartSnapshot && parsed.cartSnapshot.length > 0) {
+      cartLinesSource = parsed.cartSnapshot.map((s) => ({
+        productId: s.productId,
+        variantId: s.variantId || null,
+        quantity: s.quantity,
+        priceAmount: s.priceAmount,
+        priceCurrency: s.priceCurrency,
+      }));
+    }
+
+    if (!cartLinesSource || cartLinesSource.length === 0) {
+      return res.status(400).json({
+        error: "Cart is empty",
+        cart: { id: cart.id, totalQuantity: cart.totalQuantity, linesCount: cart.lines.length },
+      });
+    }
+
+    let subtotal = cartLinesSource.reduce(
       (sum, line) => sum + Number(line.priceAmount) * line.quantity,
       0
     );
-    const currency = cart.lines[0].priceCurrency;
+    const currency = cartLinesSource[0].priceCurrency;
     let discountAmount = 0;
     let appliedDiscount = null;
 
@@ -198,6 +252,19 @@ router.post("/", isAuthenticated, async (req, res, next) => {
       });
 
       if (discount) {
+        // ✅ CHECK USAGE LIMIT
+        if (discount.usageLimit !== null) {
+          const usedCount = await prisma.order.count({
+            where: { appliedDiscountId: discount.id },
+          });
+          
+          if (usedCount >= discount.usageLimit) {
+            return res.status(400).json({ 
+              error: "Discount code usage limit has been reached" 
+            });
+          }
+        }
+
         if (discount.type === DiscountType.PERCENTAGE) {
           discountAmount = (subtotal * Number(discount.value)) / 100;
           subtotal -= discountAmount;
@@ -252,9 +319,9 @@ router.post("/", isAuthenticated, async (req, res, next) => {
             discountAmount: discountAmount.toFixed(2),
           }),
           items: {
-            create: cart.lines.map((line) => ({
+            create: cartLinesSource.map((line) => ({
               productId: line.productId,
-              variantId: line.variantId,
+              variantId: line.variantId || null,
               quantity: line.quantity,
               priceAmount: new Prisma.Decimal(line.priceAmount),
               priceCurrency: line.priceCurrency,
@@ -269,20 +336,61 @@ router.post("/", isAuthenticated, async (req, res, next) => {
         },
       });
 
+      // ✅ DECREMENT PRODUCT QUANTITIES FOR EACH ORDER ITEM
+      for (const item of cartLinesSource) {
+        if (item.variantId) {
+          // If variant exists, decrement variant quantity
+          await tx.productVariant.update({
+            where: { id: item.variantId },
+            data: {
+              inventoryQuantity: {
+                decrement: item.quantity,
+              },
+            },
+          });
+        } else {
+          // If no variant, find the first variant of the product and decrement
+          const variant = await tx.productVariant.findFirst({
+            where: { productId: item.productId },
+          });
+          if (variant) {
+            await tx.productVariant.update({
+              where: { id: variant.id },
+              data: {
+                inventoryQuantity: {
+                  decrement: item.quantity,
+                },
+              },
+            });
+          }
+        }
+      }
+
       // ----------------- CREATE PAYMENT -----------------
+      // Payment status: for COD and external providers (e.g. PHONEPE) mark as INITIATED.
+      // For legacy/non-external methods we may mark as PAID. This prevents marking
+      // external-provider payments as paid before callback verification.
+      const methodUpper = (paymentMethod || "COD").toUpperCase();
+      const isExternalProvider = methodUpper === "PHONEPE";
+
       const newPayment = await tx.payment.create({
         data: {
           orderId: newOrder.id,
-          method: paymentMethod?.toUpperCase() || "COD",
+          method: methodUpper || "COD",
+          provider: isExternalProvider ? "PHONEPE" : null,
           amount: new Prisma.Decimal(totalAmount),
           currency,
-          status: paymentMethod?.toUpperCase() === "COD" ? "INITIATED" : "PAID",
+          status: methodUpper === "COD" || isExternalProvider ? "INITIATED" : "PAID",
         },
       });
 
       // ----------------- CLEAR CART -----------------
-      await tx.cartLine.deleteMany({ where: { cartId } });
-      await tx.cart.update({ where: { id: cartId }, data: { totalQuantity: 0 } });
+      // Only clear server-side cart if it actually had lines. If we used a client snapshot
+      // there is nothing to clear on the server.
+      if (cart.lines && cart.lines.length > 0) {
+        await tx.cartLine.deleteMany({ where: { cartId } });
+        await tx.cart.update({ where: { id: cartId }, data: { totalQuantity: 0 } });
+      }
 
       return { ...newOrder, payment: newPayment };
     });
@@ -325,19 +433,55 @@ router.post("/:id/cancel", isAuthenticated, async (req, res, next) => {
     const { id } = req.params;
     const { reason } = parsed;
 
-    const order = await prisma.order.findFirst({ where: { id, userId: req.user.id } });
+    const order = await prisma.order.findFirst({ 
+      where: { id, userId: req.user.id },
+      include: { items: true },
+    });
     if (!order) return res.status(404).json({ error: "Order not found" });
     if (!["PENDING", "PROCESSING"].includes(order.status))
       return res.status(400).json({ error: "Cannot cancel order in its current status" });
 
-    const updatedOrder = await prisma.order.update({
-      where: { id },
-      data: { status: "CANCELED", cancelReason: reason || "Canceled by customer" },
-      include: {
-        items: { include: { product: true, variant: true } },
-        shippingAddress: true,
-        billingAddress: true,
-      },
+    // ✅ RESTORE PRODUCT QUANTITIES IN TRANSACTION
+    const updatedOrder = await prisma.$transaction(async (tx) => {
+      // Restore inventory for each order item
+      for (const item of order.items) {
+        if (item.variantId) {
+          await tx.productVariant.update({
+            where: { id: item.variantId },
+            data: {
+              inventoryQuantity: {
+                increment: item.quantity,
+              },
+            },
+          });
+        } else {
+          // Find variant by product and restore
+          const variant = await tx.productVariant.findFirst({
+            where: { productId: item.productId },
+          });
+          if (variant) {
+            await tx.productVariant.update({
+              where: { id: variant.id },
+              data: {
+                inventoryQuantity: {
+                  increment: item.quantity,
+                },
+              },
+            });
+          }
+        }
+      }
+
+      // Update order status to CANCELED
+      return await tx.order.update({
+        where: { id },
+        data: { status: "CANCELED", cancelReason: reason || "Canceled by customer" },
+        include: {
+          items: { include: { product: true, variant: true } },
+          shippingAddress: true,
+          billingAddress: true,
+        },
+      });
     });
 
     res.json({
@@ -386,6 +530,7 @@ router.get("/admin/all", isAuthenticated,isAdmin, async (req, res, next) => {
           items: { include: { product: true, variant: true } },
           shippingAddress: true,
           billingAddress: true,
+          payment: true,
         },
       }),
       // prisma.order.count({ where }),
@@ -401,6 +546,15 @@ router.get("/admin/all", isAuthenticated,isAdmin, async (req, res, next) => {
         user: order.user,
         shippingAddress: order.shippingAddress,
         billingAddress: order.billingAddress,
+        payment: order.payment ? {
+          id: order.payment.id,
+          status: order.payment.status,
+          method: order.payment.method,
+          provider: order.payment.provider,
+          amount: order.payment.amount,
+          currency: order.payment.currency,
+          createdAt: order.payment.createdAt,
+        } : null,
         items: order.items.map(mapOrderItem),
       })),
       pagination: fetchAll
@@ -454,6 +608,7 @@ router.put("/admin/:id", isAuthenticated, isAdmin, async (req, res, next) => {
         items: { include: { product: true, variant: true } },
         shippingAddress: true,
         billingAddress: true,
+        payment: true,
       },
     });
 
@@ -469,6 +624,15 @@ router.put("/admin/:id", isAuthenticated, isAdmin, async (req, res, next) => {
       user: updatedOrder.user,
       shippingAddress: updatedOrder.shippingAddress,
       billingAddress: updatedOrder.billingAddress,
+      payment: updatedOrder.payment ? {
+        id: updatedOrder.payment.id,
+        status: updatedOrder.payment.status,
+        method: updatedOrder.payment.method,
+        provider: updatedOrder.payment.provider,
+        amount: updatedOrder.payment.amount,
+        currency: updatedOrder.payment.currency,
+        createdAt: updatedOrder.payment.createdAt,
+      } : null,
       items: updatedOrder.items.map((item) => ({
         id: item.id,
         quantity: item.quantity,

@@ -27,6 +27,19 @@ router.post("/validate", async (req, res, next) => {
       return res.status(400).json({ error: "Invalid or expired discount code" });
     }
 
+    // ✅ CHECK USAGE LIMIT
+    if (discount.usageLimit !== null) {
+      const usedCount = await prisma.order.count({
+        where: { appliedDiscountId: discount.id },
+      });
+      
+      if (usedCount >= discount.usageLimit) {
+        return res.status(400).json({ 
+          error: "Discount code usage limit has been reached" 
+        });
+      }
+    }
+
     // check min order amount
     if (
       discount.minOrderAmount &&
@@ -43,6 +56,7 @@ router.post("/validate", async (req, res, next) => {
         code: discount.code,
         type: discount.type,
         value: discount.value,
+        usageLimit: discount.usageLimit,
       },
     });
   } catch (err) {
@@ -77,7 +91,7 @@ router.post("/create", isAuthenticated, async (req, res, next) => {
   try {
     if (!req.user.isAdmin) return res.status(403).json({ error: "Not authorized" });
 
-    const { code, description, type, value, minOrderAmount, startsAt, endsAt } = req.body;
+    const { code, description, type, value, minOrderAmount, startsAt, endsAt, usageLimit, active } = req.body;
 
     const discount = await prisma.discount.create({
       data: {
@@ -88,6 +102,8 @@ router.post("/create", isAuthenticated, async (req, res, next) => {
         minOrderAmount,
         startsAt: startsAt ? new Date(startsAt) : null,
         endsAt: endsAt ? new Date(endsAt) : null,
+        usageLimit: usageLimit ? parseInt(usageLimit) : null,
+        active: active !== undefined ? active : true,
       },
     });
 
@@ -139,7 +155,7 @@ router.patch("/:id", isAuthenticated,isAdmin, async (req, res, next) => {
   try {
 
     const { id } = req.params;
-    const { description, active, value, type, minOrderAmount, startsAt, endsAt } = req.body;
+    const { description, active, value, type, minOrderAmount, startsAt, endsAt, usageLimit } = req.body;
 
     const updated = await prisma.discount.update({
       where: { id },
@@ -151,6 +167,7 @@ router.patch("/:id", isAuthenticated,isAdmin, async (req, res, next) => {
         minOrderAmount,
         startsAt: startsAt ? new Date(startsAt) : null,
         endsAt: endsAt ? new Date(endsAt) : null,
+        usageLimit: usageLimit !== undefined ? (usageLimit ? parseInt(usageLimit) : null) : undefined,
       },
     });
 

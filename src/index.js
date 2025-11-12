@@ -1,12 +1,22 @@
 import express from "express";
-import cors from "cors";
-import dotenv from "dotenv";
-import helmet from "helmet";
 import compression from "compression";
 import morgan from "morgan";
-import rateLimit from "express-rate-limit";
 import cookieParser from "cookie-parser";
 
+// ✅ Environment Configuration
+import { validateEnv, isProductionMode, printSensitiveVars } from "./config/env.js";
+
+// ✅ Security
+import {
+  configureSecurityHeaders,
+  configureCors,
+  configureHttpsRedirect,
+  createGlobalRateLimiter,
+  createStrictRateLimiter,
+  createPaymentRateLimiter,
+} from "./config/security.js";
+
+// ✅ Routes
 import collectionsRouter from "./routes/collections.js";
 import productsRouter from "./routes/products.js";
 import searchRouter from "./routes/search.js";
@@ -19,104 +29,143 @@ import discountRouter from "./routes/discount.js";
 import tagsRouter from "./routes/tags.js";
 import userRouter from "./routes/users.js";
 import subscriptionsRouter from "./routes/subscriptions.js";
+import paymentRouter from "./routes/payment.js";
 
-dotenv.config();
+// ⚡ Validate environment variables FIRST (before anything else)
+console.log("\n🔍 Validating environment configuration...\n");
+validateEnv();
+
+// If not production, print sensitive vars (masked)
+if (!isProductionMode()) {
+  printSensitiveVars();
+}
 
 const app = express();
 
-/* ✅ Always trust proxy in dev/tunnel environments */
-if (process.env.NODE_ENV !== "production" || process.env.TRUST_PROXY === "true") {
-  app.set("trust proxy", 1);
-}
+// ✅ Trust proxy settings
+app.set("trust proxy", 1);
 
-/* ✅ Security, logging & performance middleware */
-app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
-app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
+// ✅ Security Headers (Helmet)
+configureSecurityHeaders(app);
+
+// ✅ HTTPS Redirect (Production)
+configureHttpsRedirect(app);
+
+// ✅ CORS Configuration (Strict in Production)
+configureCors(app);
+
+// ✅ Logging Middleware
+app.use(morgan(isProductionMode() ? "combined" : "dev"));
+
+// ✅ Compression
 app.use(compression());
 
-/* ✅ CORS configuration */
-const allowedOrigins = [
-  process.env.CORS_ORIGIN || "http://localhost:3000",
-  "http://localhost:3000",
-  /\.vercel\.app$/,  // Allow Vercel domains
-  /\.devtunnels\.ms$/,  // Allow VS Code Dev Tunnel domains
-];
-
-app.use(
-  cors({
-    origin: function(origin, callback) {
-      // Allow requests with no origin (like mobile apps, curl, etc.)
-      if (!origin) return callback(null, true);
-      
-      // Check if origin is allowed
-      const isAllowed = allowedOrigins.some(allowed => {
-        if (allowed instanceof RegExp) {
-          return allowed.test(origin);
-        }
-        return allowed === origin;
-      });
-      
-      if (isAllowed) {
-        callback(null, true);
-      } else {
-        callback(new Error('CORS not allowed'));
-      }
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-  })
-);
-
+// ✅ Cookie Parser
 app.use(cookieParser());
+
+// ✅ JSON Parser with size limit
 app.use(express.json({ limit: "1mb" }));
 
-/* ✅ Health check endpoint */
-app.get("/health", (_req, res) => res.json({ ok: true }));
+// ✅ Health check endpoint (no rate limit)
+app.get("/health", (_req, res) => {
+  res.json({ 
+    ok: true, 
+    environment: process.env.NODE_ENV || "development",
+    timestamp: new Date().toISOString()
+  });
+});
 
-/* ✅ Rate limiting */
-app.use(
-  rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 1000,
-    message: { error: "Too many requests" },
-    standardHeaders: true,
-    legacyHeaders: false,
-  })
-);
+// ✅ Global Rate Limiting (lenient)
+app.use(createGlobalRateLimiter());
 
-/* ✅ Routes */
+// ✅ Auth Routes (with strict rate limiting)
+const strictLimiter = createStrictRateLimiter();
+app.use("/auth", strictLimiter, authRouter);
+
+// ✅ Payment Routes (with payment-specific rate limiting)
+const paymentLimiter = createPaymentRateLimiter();
+app.use("/payment", paymentLimiter, paymentRouter);
+
+// ✅ Admin Payment Routes (explicit mount so frontend can call /admin/payment/:id)
+// Uses the strict limiter to protect admin operations
+app.use("/admin/payment", strictLimiter, paymentRouter);
+
+// ✅ Public Routes
 app.use("/collections", collectionsRouter);
 app.use("/products", productsRouter);
 app.use("/search", searchRouter);
 app.use("/menu", menuRouter);
-app.use("/auth", authRouter);
 app.use("/cart", cartRouter);
+
+// ✅ Protected Routes (require authentication)
 app.use("/addresses", addressesRouter);
 app.use("/orders", ordersRouter);
 app.use("/discounts", discountRouter);
 app.use("/tags", tagsRouter);
 app.use("/users", userRouter);
 app.use("/subscriptions", subscriptionsRouter);
-app.use("/subscriptions", subscriptionsRouter);
 
-/* ✅ 404 handler */
-app.use((req, res) => res.status(404).json({ error: "Not Found", path: req.path }));
+// ✅ 404 Handler
+app.use((req, res) => {
+  res.status(404).json({
+    error: "Not Found",
+    path: req.path,
+    method: req.method,
+    timestamp: new Date().toISOString(),
+  });
+});
 
-/* ✅ Centralized error handler */
+// ✅ Centralized Error Handler (MUST BE LAST)
 app.use((err, _req, res, _next) => {
   const status = err.status || 500;
   const message = err.message || "Internal Server Error";
-  const response = { error: message };
+  const response = {
+    error: message,
+    timestamp: new Date().toISOString(),
+  };
 
-  if (process.env.NODE_ENV !== "production") response.stack = err.stack;
+  // Include stack trace in development
+  if (!isProductionMode()) {
+    response.stack = err.stack;
+  }
 
-  console.error(err);
+  console.error("❌ Error:", {
+    status,
+    message,
+    path: _req.path,
+    method: _req.method,
+  });
+
   res.status(status).json(response);
 });
 
-/* ✅ Server startup */
+// ✅ Server Startup
 const port = process.env.PORT || 4000;
-app.listen(port, () => {
-  console.log(`✅ API running on http://localhost:${ port}`);
+const server = app.listen(port, () => {
+  console.log("\n╔════════════════════════════════════════════════════════════╗");
+  console.log("║                 🚀 SERVER STARTED SUCCESSFULLY             ║");
+  console.log("╚════════════════════════════════════════════════════════════╝\n");
+  console.log(`✅ API running on http://localhost:${port}`);
+  console.log(`📝 Environment: ${isProductionMode() ? "PRODUCTION" : "DEVELOPMENT"}`);
+  console.log(`🔐 PHONEPE_MOCK: ${process.env.PHONEPE_MOCK === "true" ? "ENABLED (Mock Mode)" : "DISABLED (Real Mode)"}`);
+  console.log("\n");
 });
+
+// ✅ Graceful Shutdown
+process.on("SIGTERM", () => {
+  console.log("\n⚠️  SIGTERM received. Shutting down gracefully...");
+  server.close(() => {
+    console.log("✅ Server closed");
+    process.exit(0);
+  });
+});
+
+process.on("SIGINT", () => {
+  console.log("\n⚠️  SIGINT received. Shutting down gracefully...");
+  server.close(() => {
+    console.log("✅ Server closed");
+    process.exit(0);
+  });
+});
+
+export default app;

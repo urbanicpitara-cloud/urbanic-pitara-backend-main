@@ -37,6 +37,7 @@ enum PaymentMethod {
   COD        // Cash on delivery
   STRIPE
   RAZORPAY
+  PHONEPE
   PAYPAL
   // add more providers as needed
 }
@@ -460,7 +461,7 @@ model Payment {
   order             Order?        @relation(fields: [orderId], references: [id])
   orderId           String?       @unique
   method            PaymentMethod // new enum field
-  provider          String?       // optional, e.g., "stripe", "razorpay"
+  provider          String?       // optional, e.g., "stripe", "razorpay", "phonepe"
   providerOrderId   String?
   providerPaymentId String?
   amount            Decimal       @db.Decimal(10, 2)
@@ -469,9 +470,30 @@ model Payment {
   rawResponse       Json?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @default(now()) @updatedAt
+  transaction       Transaction?
 
   @@index([providerPaymentId])
   @@index([orderId])
+}
+
+model Transaction {
+  id               String    @id
+  payment          Payment?  @relation(fields: [paymentId], references: [id])
+  paymentId        String?   @unique
+  amount           Decimal   @db.Decimal(10, 2)
+  currency         String    @default("INR")
+  orderId          String
+  userId           String
+  status           String    @default("PENDING") // PENDING, COMPLETED, FAILED
+  provider         String    @default("PHONEPE")
+  responseCode     String?
+  responseMessage  String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @default(now()) @updatedAt
+
+  @@index([orderId])
+  @@index([userId])
+  @@index([status])
 }
 
 

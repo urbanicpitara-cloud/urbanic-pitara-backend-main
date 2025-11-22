@@ -116,9 +116,13 @@ model Product {
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
 
+  // Grouping for color variants (siblings)
+  colorGroupingId String?
+
   @@index([handle])
   @@index([collectionId])
   @@index([published])
+  @@index([colorGroupingId])
 }
 
 model ProductImage {

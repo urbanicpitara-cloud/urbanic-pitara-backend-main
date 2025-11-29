@@ -30,6 +30,7 @@ import tagsRouter from "./routes/tags.js";
 import userRouter from "./routes/users.js";
 import subscriptionsRouter from "./routes/subscriptions.js";
 import paymentRouter from "./routes/payment.js";
+import customizerRouter from "./routes/customizer.js";
 
 // ⚡ Validate environment variables FIRST (before anything else)
 console.log("\n🔍 Validating environment configuration...\n");
@@ -96,6 +97,7 @@ app.use("/products", productsRouter);
 app.use("/search", searchRouter);
 app.use("/menu", menuRouter);
 app.use("/cart", cartRouter);
+app.use("/customizer", customizerRouter);
 
 // ✅ Protected Routes (require authentication)
 app.use("/addresses", addressesRouter);

@@ -9,6 +9,11 @@ const cartInclude = {
     include: {
       product: { include: { images: true } },
       variant: true,
+      customProduct: {
+        include: {
+          design: true,
+        },
+      },
     },
   },
 };
@@ -29,7 +34,7 @@ const formatCart = (cart) => {
     lines: cart.lines.map((l) => ({
       id: l.id,
       quantity: l.quantity,
-      product: {
+      product: l.product ? {
         id: l.product.id,
         title: l.product.title,
         handle: l.product.handle,
@@ -44,11 +49,21 @@ const formatCart = (cart) => {
               altText: l.product.images[0].altText,
             }
           : null,
-      },
+      } : null,
       variant: l.variant
         ? {
             id: l.variant.id,
             selectedOptions: l.variant.selectedOptions,
+          }
+        : null,
+      customProduct: l.customProduct
+        ? {
+            id: l.customProduct.id,
+            title: l.customProduct.title,
+            color: l.customProduct.color,
+            size: l.customProduct.size,
+            previewUrl: l.customProduct.previewUrl,
+            description: l.customProduct.description,
           }
         : null,
       price: {
@@ -116,6 +131,13 @@ router.get("/", async (req, res, next) => {
       }
     }
 
+    console.log('📦 Cart GET - Lines:', cart.lines.map(l => ({
+      id: l.id,
+      productId: l.productId,
+      customProductId: l.customProductId,
+      hasCustomProduct: !!l.customProduct
+    })));
+
     res.json(formatCart(cart));
   } catch (err) {
     next(err);
@@ -127,26 +149,43 @@ router.get("/", async (req, res, next) => {
  */
 router.post("/lines", async (req, res, next) => {
   try {
-    const { productId, variantId, quantity = 1 } = req.body;
+    const { productId, variantId, quantity = 1, customProductId } = req.body;
     const cartId = req.body.cartId || req.cookies.cartId;
     const userId = req.user?.id || null;
 
-    if (!productId) return res.status(400).json({ error: "Product ID is required" });
+    if (!productId && !customProductId) {
+      return res.status(400).json({ error: "Either Product ID or Custom Product ID is required" });
+    }
     if (quantity <= 0) return res.status(400).json({ error: "Quantity must be positive" });
 
-    const product = await prisma.product.findUnique({
-      where: { id: productId },
-      include: { variants: true },
-    });
-    if (!product) return res.status(404).json({ error: "Product not found" });
-
+    // Validate product if productId is provided
+    let product = null;
     let variant = null;
-    if (variantId) {
-      variant = await prisma.productVariant.findUnique({ where: { id: variantId } });
-      if (!variant || variant.productId !== productId)
-        return res.status(404).json({ error: "Invalid variant" });
-      if (!variant.availableForSale || variant.inventoryQuantity < quantity)
-        return res.status(400).json({ error: "Variant unavailable or out of stock" });
+    if (productId) {
+      product = await prisma.product.findUnique({
+        where: { id: productId },
+        include: { variants: true },
+      });
+      if (!product) return res.status(404).json({ error: "Product not found" });
+
+      if (variantId) {
+        variant = await prisma.productVariant.findUnique({ where: { id: variantId } });
+        if (!variant || variant.productId !== productId)
+          return res.status(404).json({ error: "Invalid variant" });
+        if (!variant.availableForSale || variant.inventoryQuantity < quantity)
+          return res.status(400).json({ error: "Variant unavailable or out of stock" });
+      }
+    }
+
+    // Validate customProduct if customProductId is provided
+    let customProduct = null;
+    if (customProductId) {
+      customProduct = await prisma.customProduct.findUnique({
+        where: { id: customProductId },
+      });
+      if (!customProduct) {
+        return res.status(404).json({ error: "Custom product not found" });
+      }
     }
 
     let cart = cartId
@@ -165,8 +204,15 @@ router.post("/lines", async (req, res, next) => {
     }
 
     await prisma.$transaction(async (tx) => {
+      // For custom products, we always create a new line (don't merge)
+      // For regular products, we merge quantities if same product+variant
       const existing = await tx.cartLine.findFirst({
-        where: { cartId: cart.id, productId, variantId: variantId || null },
+        where: { 
+          cartId: cart.id, 
+          productId: productId || null, 
+          variantId: variantId || null,
+          customProductId: customProductId || null 
+        },
       });
 
       if (existing) {
@@ -175,14 +221,30 @@ router.post("/lines", async (req, res, next) => {
           data: { quantity: existing.quantity + quantity },
         });
       } else {
+        // Determine price amount and currency
+        let priceAmount = "0";
+        let priceCurrency = "INR";
+
+        if (customProduct) {
+          priceAmount = customProduct.price.toString();
+          priceCurrency = "INR"; // Assuming INR for custom products
+        } else if (variant) {
+          priceAmount = variant.priceAmount.toString();
+          priceCurrency = variant.priceCurrency;
+        } else if (product) {
+          priceAmount = product.minPriceAmount.toString();
+          priceCurrency = product.minPriceCurrency;
+        }
+
         await tx.cartLine.create({
           data: {
             cartId: cart.id,
-            productId,
+            productId: productId || null,
             variantId: variantId || null,
+            customProductId: customProductId || null,
             quantity,
-            priceAmount: variant ? variant.priceAmount : product.minPriceAmount,
-            priceCurrency: variant ? variant.priceCurrency : product.minPriceCurrency,
+            priceAmount,
+            priceCurrency,
           },
         });
       }

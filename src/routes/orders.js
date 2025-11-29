@@ -33,8 +33,9 @@ const createOrderSchema = z.object({
   cartSnapshot: z
     .array(
       z.object({
-        productId: z.string(),
+        productId: z.string().nullable().optional(),
         variantId: z.string().nullable().optional(),
+        customProductId: z.string().nullable().optional(),
         quantity: z.number().int().min(1),
         priceAmount: z.number(),
         priceCurrency: z.string(),
@@ -76,17 +77,31 @@ const bulkUpdateOrdersSchema = z.object({
 const mapOrderItem = (item) => ({
   id: item.id,
   quantity: item.quantity,
-  product: {
+  product: item.product ? {
     id: item.product.id,
     title: item.product.title,
     handle: item.product.handle,
     featuredImage: item.product.featuredImageUrl
       ? { url: item.product.featuredImageUrl, altText: item.product.featuredImageAlt }
       : null,
-  },
+  } : (item.customProduct ? {
+    id: item.customProduct.id,
+    title: item.customProduct.title,
+    handle: `custom-${item.customProduct.id}`,
+    featuredImage: item.customProduct.previewUrl
+      ? { url: item.customProduct.previewUrl, altText: item.customProduct.title }
+      : null,
+  } : null),
   variant: item.variant
     ? { id: item.variant.id, selectedOptions: item.variant.selectedOptions }
     : null,
+  customProduct: item.customProduct ? {
+    id: item.customProduct.id,
+    title: item.customProduct.title,
+    color: item.customProduct.color,
+    size: item.customProduct.size,
+    previewUrl: item.customProduct.previewUrl,
+  } : null,
   price: { amount: item.priceAmount, currencyCode: item.priceCurrency },
   subtotal: {
     amount: (Number(item.priceAmount) * item.quantity).toFixed(2),
@@ -103,7 +118,7 @@ router.get("/", isAuthenticated, async (req, res, next) => {
       where: { userId: req.user.id },
       orderBy: { placedAt: "desc" },
       include: {
-        items: { include: { product: true, variant: true } },
+        items: { include: { product: true, variant: true, customProduct: true } },
         shippingAddress: true,
         billingAddress: true,
         payment: true,
@@ -147,7 +162,7 @@ router.get("/:id", isAuthenticated, async (req, res, next) => {
         user: {
           select: { id: true, email: true, firstName: true, lastName: true },
         },
-        items: { include: { product: true, variant: true } },
+        items: { include: { product: true, variant: true, customProduct: true } },
         shippingAddress: true,
         billingAddress: true,
         payment: true,
@@ -199,10 +214,10 @@ router.post("/", isAuthenticated, async (req, res, next) => {
 
     const { cartId, shippingAddress, billingAddress, shippingAddressId, billingAddressId, paymentMethod, discountCode } = parsed;
 
-    // ----------------- FETCH CART -----------------
+    // ----------- FETCH CART -----------------
     const cart = await prisma.cart.findUnique({
       where: { id: cartId },
-      include: { lines: { include: { product: true, variant: true } } },
+      include: { lines: { include: { product: true, variant: true, customProduct: true } } },
     });
 
     if (!cart) return res.status(404).json({ error: "Cart not found" });
@@ -217,8 +232,9 @@ router.post("/", isAuthenticated, async (req, res, next) => {
 
     if ((!cart.lines || cart.lines.length === 0) && parsed.cartSnapshot && parsed.cartSnapshot.length > 0) {
       cartLinesSource = parsed.cartSnapshot.map((s) => ({
-        productId: s.productId,
+        productId: s.productId || null,
         variantId: s.variantId || null,
+        customProductId: s.customProductId || null,
         quantity: s.quantity,
         priceAmount: s.priceAmount,
         priceCurrency: s.priceCurrency,
@@ -320,8 +336,9 @@ router.post("/", isAuthenticated, async (req, res, next) => {
           }),
           items: {
             create: cartLinesSource.map((line) => ({
-              productId: line.productId,
+              productId: line.productId || null,
               variantId: line.variantId || null,
+              customProductId: line.customProductId || null,
               quantity: line.quantity,
               priceAmount: new Prisma.Decimal(line.priceAmount),
               priceCurrency: line.priceCurrency,
@@ -329,15 +346,20 @@ router.post("/", isAuthenticated, async (req, res, next) => {
           },
         },
         include: {
-          items: { include: { product: true, variant: true } },
+          items: { include: { product: true, variant: true, customProduct: true } },
           shippingAddress: true,
           billingAddress: true,
           appliedDiscount: true,
         },
       });
 
-      // ✅ DECREMENT PRODUCT QUANTITIES FOR EACH ORDER ITEM
+      // ✅ DECREMENT PRODUCT QUANTITIES FOR EACH ORDER ITEM (skip custom products)
       for (const item of cartLinesSource) {
+        // Skip custom products - they don't have inventory to manage
+        if (item.customProductId) {
+          continue;
+        }
+        
         if (item.variantId) {
           // If variant exists, decrement variant quantity
           await tx.productVariant.update({
@@ -348,7 +370,7 @@ router.post("/", isAuthenticated, async (req, res, next) => {
               },
             },
           });
-        } else {
+        } else if (item.productId) {
           // If no variant, find the first variant of the product and decrement
           const variant = await tx.productVariant.findFirst({
             where: { productId: item.productId },
@@ -435,7 +457,7 @@ router.post("/:id/cancel", isAuthenticated, async (req, res, next) => {
 
     const order = await prisma.order.findFirst({ 
       where: { id, userId: req.user.id },
-      include: { items: true },
+      include: { items: { include: { product: true, variant: true, customProduct: true } } },
     });
     if (!order) return res.status(404).json({ error: "Order not found" });
     if (!["PENDING", "PROCESSING"].includes(order.status))
@@ -443,8 +465,13 @@ router.post("/:id/cancel", isAuthenticated, async (req, res, next) => {
 
     // ✅ RESTORE PRODUCT QUANTITIES IN TRANSACTION
     const updatedOrder = await prisma.$transaction(async (tx) => {
-      // Restore inventory for each order item
+      // Restore inventory for each order item (skip custom products)
       for (const item of order.items) {
+        // Skip custom products - they don't have inventory to manage
+        if (item.customProductId) {
+          continue;
+        }
+        
         if (item.variantId) {
           await tx.productVariant.update({
             where: { id: item.variantId },
@@ -454,7 +481,7 @@ router.post("/:id/cancel", isAuthenticated, async (req, res, next) => {
               },
             },
           });
-        } else {
+        } else if (item.productId) {
           // Find variant by product and restore
           const variant = await tx.productVariant.findFirst({
             where: { productId: item.productId },
@@ -527,7 +554,7 @@ router.get("/admin/all", isAuthenticated,isAdmin, async (req, res, next) => {
           user: {
             select: { id: true, email: true, firstName: true, lastName: true },
           },
-          items: { include: { product: true, variant: true } },
+          items: { include: { product: true, variant: true, customProduct: true } },
           shippingAddress: true,
           billingAddress: true,
           payment: true,
@@ -605,7 +632,7 @@ router.put("/admin/:id", isAuthenticated, isAdmin, async (req, res, next) => {
       data: parsed,
       include: {
         user: { select: { id: true, email: true, firstName: true, lastName: true } },
-        items: { include: { product: true, variant: true } },
+        items: { include: { product: true, variant: true, customProduct: true } },
         shippingAddress: true,
         billingAddress: true,
         payment: true,
@@ -678,7 +705,7 @@ router.put("/admin/:id/status", isAuthenticated, async (req, res, next) => {
       },
       include: {
         user: { select: { id: true, email: true, firstName: true, lastName: true } },
-        items: { include: { product: true, variant: true } },
+        items: { include: { product: true, variant: true, customProduct: true } },
         shippingAddress: true,
         billingAddress: true,
       },

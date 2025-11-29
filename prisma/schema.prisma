@@ -34,14 +34,13 @@ enum DiscountType {
 }
 
 enum PaymentMethod {
-  COD        // Cash on delivery
+  COD // Cash on delivery
   STRIPE
   RAZORPAY
   PHONEPE
   PAYPAL
   // add more providers as needed
 }
-
 
 /**
  * * MODELS **
@@ -66,8 +65,8 @@ model Collection {
 }
 
 model Product {
-  id              String     @id @default(cuid())
-  handle          String     @unique
+  id              String      @id @default(cuid())
+  handle          String      @unique
   title           String
   vendor          String?
   description     String?
@@ -190,12 +189,12 @@ model MenuItem {
 }
 
 model User {
-  id               String     @id @default(cuid())
-  email            String     @unique
+  id               String          @id @default(cuid())
+  email            String          @unique
   passwordHash     String
   firstName        String?
   lastName         String?
-  isAdmin          Boolean    @default(false)
+  isAdmin          Boolean         @default(false)
   phone            String?
   addresses        Address[]
   orders           Order[]
@@ -204,9 +203,10 @@ model User {
   reviews          Review[]
   resetToken       String?
   resetTokenExpiry DateTime?
-  createdAt        DateTime   @default(now())
-  updatedAt        DateTime   @default(now()) @updatedAt
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @default(now()) @updatedAt
   deletedAt        DateTime? // soft-delete
+  customProducts   CustomProduct[]
 
   @@index([email])
 }
@@ -252,64 +252,21 @@ model CartLine {
   id            String          @id @default(cuid())
   cart          Cart            @relation(fields: [cartId], references: [id])
   cartId        String
-  product       Product         @relation("CartLine_Product", fields: [productId], references: [id])
-  productId     String
+  product       Product?        @relation("CartLine_Product", fields: [productId], references: [id])
+  productId     String?
   variant       ProductVariant? @relation("CartLine_Variant", fields: [variantId], references: [id])
   variantId     String?
   quantity      Int             @default(1)
   priceAmount   Decimal         @db.Decimal(10, 2)
   priceCurrency String
+
+  customProduct   CustomProduct? @relation(fields: [customProductId], references: [id])
+  customProductId String?
 }
 
 /**
  * * ORDERS **
  */
-// model Order {
-//   id     String @id @default(cuid())
-//   user   User   @relation(fields: [userId], references: [id])
-//   userId String
-
-//   // Legacy - keep for now (string) so existing app doesn't break
-//   status        OrderStatus? @default(PENDING)
-//   totalAmount   String
-//   totalCurrency String
-
-//   // NEW recommended fields (non-breaking). Backfill these, then switch code to use them.
-//   statusEnum         OrderStatus? @default(PENDING)
-//   totalAmountDecimal Decimal?     @db.Decimal(10, 2)
-//   totalCurrencyCode  String?
-
-//   orderNumber       String?
-//   paymentMethod     String?
-//   paymentId         String? // link to Payment model
-//   payment           Payment?
-//   placedAt          DateTime    @default(now())
-//   items             OrderItem[]
-//   shippingAddressId String?
-//   shippingAddress   Address?    @relation("Order_ShippingAddress", fields: [shippingAddressId], references: [id])
-//   billingAddressId  String?
-//   billingAddress    Address?    @relation("Order_BillingAddress", fields: [billingAddressId], references: [id])
-//   cancelReason      String?
-
-//   // discount 
-//   discountAmount    Decimal?  @default(0)
-//   appliedDiscountId String?
-//   appliedDiscount   Discount? @relation("OrderDiscount", fields: [appliedDiscountId], references: [id])
-//   // 👆 Explicit relation name added here
-
-//   // tracking/admin
-//   trackingNumber  String?
-//   trackingCompany String?
-//   adminNotes      String?
-
-//   createdAt DateTime @default(now())
-//   updatedAt DateTime @default(now()) @updatedAt
-
-//   @@index([userId])
-//   @@index([status])
-//   @@index([placedAt])
-// }
-
 model Order {
   id     String @id @default(cuid())
   user   User   @relation(fields: [userId], references: [id])
@@ -320,9 +277,9 @@ model Order {
   totalAmount   String
   totalCurrency String
 
-  orderNumber       String?
-  paymentId         String? // link to Payment model
-  payment           Payment?
+  orderNumber String?
+  paymentId   String? // link to Payment model
+  payment     Payment?
 
   placedAt          DateTime    @default(now())
   items             OrderItem[]
@@ -348,7 +305,6 @@ model Order {
   @@index([placedAt])
 }
 
-
 /**
  * * ORDER ITEMS **
  */
@@ -356,18 +312,18 @@ model OrderItem {
   id            String          @id @default(cuid())
   order         Order           @relation(fields: [orderId], references: [id])
   orderId       String
-  product       Product         @relation("OrderItem_Product", fields: [productId], references: [id])
-  productId     String
+  product       Product?        @relation("OrderItem_Product", fields: [productId], references: [id])
+  productId     String?
   variant       ProductVariant? @relation("OrderItem_Variant", fields: [variantId], references: [id])
   variantId     String?
   quantity      Int
   priceAmount   Decimal         @db.Decimal(10, 2)
   priceCurrency String
+
+  customProduct   CustomProduct? @relation(fields: [customProductId], references: [id])
+  customProductId String?
 }
 
-/**
- * * TAGS **
- */
 model Tag {
   id          String       @id @default(cuid())
   handle      String       @unique
@@ -461,7 +417,7 @@ model Payment {
   order             Order?        @relation(fields: [orderId], references: [id])
   orderId           String?       @unique
   method            PaymentMethod // new enum field
-  provider          String?       // optional, e.g., "stripe", "razorpay", "phonepe"
+  provider          String? // optional, e.g., "stripe", "razorpay", "phonepe"
   providerOrderId   String?
   providerPaymentId String?
   amount            Decimal       @db.Decimal(10, 2)
@@ -477,25 +433,24 @@ model Payment {
 }
 
 model Transaction {
-  id               String    @id
-  payment          Payment?  @relation(fields: [paymentId], references: [id])
-  paymentId        String?   @unique
-  amount           Decimal   @db.Decimal(10, 2)
-  currency         String    @default("INR")
-  orderId          String
-  userId           String
-  status           String    @default("PENDING") // PENDING, COMPLETED, FAILED
-  provider         String    @default("PHONEPE")
-  responseCode     String?
-  responseMessage  String?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @default(now()) @updatedAt
+  id              String   @id
+  payment         Payment? @relation(fields: [paymentId], references: [id])
+  paymentId       String?  @unique
+  amount          Decimal  @db.Decimal(10, 2)
+  currency        String   @default("INR")
+  orderId         String
+  userId          String
+  status          String   @default("PENDING") // PENDING, COMPLETED, FAILED
+  provider        String   @default("PHONEPE")
+  responseCode    String?
+  responseMessage String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now()) @updatedAt
 
   @@index([orderId])
   @@index([userId])
   @@index([status])
 }
-
 
 /**
  * * PAGES / CMS **
@@ -516,9 +471,9 @@ model Page {
 model Subscriber {
   id        String   @id @default(cuid())
   email     String   @unique
-  source    String?  // e.g. "footer", "home"
+  source    String? // e.g. "footer", "home"
   verified  Boolean  @default(false)
-  meta      Json?    // optional metadata
+  meta      Json? // optional metadata
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
 }
@@ -531,4 +486,58 @@ model EventLog {
   type      String
   payload   Json?
   createdAt DateTime @default(now())
+}
+
+/**
+ * * CUSTOM HOODIE SYSTEM **
+ */
+
+model HoodieTemplate {
+  id       String @id @default(cuid())
+  color    String
+  side     String // front | back | left | right
+  imageUrl String // from /public/hoodies or Cloudinary if needed
+
+  createdAt DateTime @default(now())
+
+  @@index([color])
+  @@index([side])
+}
+
+model CustomProduct {
+  id String @id @default(cuid())
+
+  user   User?   @relation(fields: [userId], references: [id])
+  userId String?
+
+  title       String?
+  description String?
+
+  previewUrl String? // Cloudinary thumbnail URL
+  exportUrl  String? // Cloudinary print image URL
+
+  color String
+  size  String?
+  price Decimal @db.Decimal(10, 2)
+
+  design Design?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  cartLines  CartLine[]
+  orderItems OrderItem[]
+}
+
+model Design {
+  id              String        @id @default(cuid())
+  customProduct   CustomProduct @relation(fields: [customProductId], references: [id])
+  customProductId String        @unique
+
+  json         Json
+  thumbnailUrl String? // Cloudinary
+  exportUrl    String? // Cloudinary
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
 }

@@ -72,6 +72,10 @@ const bulkUpdateOrdersSchema = z.object({
   adminNotes: z.string().nullable().optional(),
 });
 
+const bulkDeleteOrdersSchema = z.object({
+  orderIds: z.array(z.string()),
+});
+
 // ----------------------- HELPERS ----------------------- //
 
 const mapOrderItem = (item) => ({
@@ -101,6 +105,7 @@ const mapOrderItem = (item) => ({
     color: item.customProduct.color,
     size: item.customProduct.size,
     previewUrl: item.customProduct.previewUrl,
+    snapshots: item.customProduct.snapshots,
   } : null,
   price: { amount: item.priceAmount, currencyCode: item.priceCurrency },
   subtotal: {
@@ -600,6 +605,45 @@ router.get("/admin/all", isAuthenticated,isAdmin, async (req, res, next) => {
 
 
 
+router.delete("/admin/bulk-delete", isAuthenticated, isAdmin, async (req, res, next) => {
+  try {
+    const parsed = bulkDeleteOrdersSchema.parse(req.body);
+    const { orderIds } = parsed;
+
+    if (!orderIds || orderIds.length === 0) {
+      return res.status(400).json({ error: "No order IDs provided" });
+    }
+
+    // Delete orders and their related items
+    const result = await prisma.$transaction(async (tx) => {
+      // First delete order items
+      await tx.orderItem.deleteMany({
+        where: { orderId: { in: orderIds } },
+      });
+
+      // Then delete payments
+      await tx.payment.deleteMany({
+        where: { orderId: { in: orderIds } },
+      });
+
+      // Finally delete orders
+      const deletedOrders = await tx.order.deleteMany({
+        where: { id: { in: orderIds } },
+      });
+
+      return deletedOrders;
+    });
+
+    res.json({
+      message: `${result.count} order(s) deleted successfully`,
+      count: result.count,
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) return res.status(400).json({ error: error.errors });
+    next(error);
+  }
+});
+
 router.put("/admin/bulk-update", isAuthenticated, isAdmin, async (req, res, next) => {
   try {
     const parsed = bulkUpdateOrdersSchema.parse(req.body);
@@ -660,22 +704,7 @@ router.put("/admin/:id", isAuthenticated, isAdmin, async (req, res, next) => {
         currency: updatedOrder.payment.currency,
         createdAt: updatedOrder.payment.createdAt,
       } : null,
-      items: updatedOrder.items.map((item) => ({
-        id: item.id,
-        quantity: item.quantity,
-        product: {
-          id: item.product.id,
-          title: item.product.title,
-        },
-        variant: item.variant
-          ? { id: item.variant.id, selectedOptions: item.variant.selectedOptions }
-          : null,
-        price: { amount: item.priceAmount, currencyCode: item.priceCurrency },
-        subtotal: {
-          amount: (Number(item.priceAmount) * item.quantity).toFixed(2),
-          currencyCode: item.priceCurrency,
-        },
-      })),
+      items: updatedOrder.items.map(mapOrderItem),
     });
   } catch (error) {
     if (error instanceof z.ZodError) return res.status(400).json({ error: error.errors });

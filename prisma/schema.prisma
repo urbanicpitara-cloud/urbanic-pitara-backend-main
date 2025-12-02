@@ -504,6 +504,69 @@ model HoodieTemplate {
   @@index([side])
 }
 
+/**
+ * * SCALABLE CUSTOMIZER MODELS **
+ */
+
+model PrintableProduct {
+  id          String  @id @default(cuid())
+  name        String // e.g. "Premium Hoodie", "Cotton T-Shirt"
+  description String?
+  basePrice   Decimal @db.Decimal(10, 2)
+
+  variants PrintableVariant[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+}
+
+model PrintableVariant {
+  id                 String           @id @default(cuid())
+  printableProduct   PrintableProduct @relation(fields: [printableProductId], references: [id], onDelete: Cascade)
+  printableProductId String
+
+  colorName String // e.g. "Black", "Red"
+  colorHex  String // e.g. "#000000"
+
+  views PrintableView[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+}
+
+model PrintableView {
+  id                 String           @id @default(cuid())
+  printableVariant   PrintableVariant @relation(fields: [printableVariantId], references: [id], onDelete: Cascade)
+  printableVariantId String
+
+  side     String // "front", "back", "left", "right"
+  imageUrl String // Cloudinary URL
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+}
+
+model ArtCategory {
+  id     String     @id @default(cuid())
+  name   String     @unique // "Memes", "Sports"
+  assets ArtAsset[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+}
+
+model ArtAsset {
+  id         String      @id @default(cuid())
+  category   ArtCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  categoryId String
+
+  url  String // Cloudinary URL
+  name String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+}
+
 model CustomProduct {
   id String @id @default(cuid())
 
@@ -516,9 +579,10 @@ model CustomProduct {
   previewUrl String? // Cloudinary thumbnail URL
   exportUrl  String? // Cloudinary print image URL
 
-  color String
-  size  String?
-  price Decimal @db.Decimal(10, 2)
+  color     String
+  size      String?
+  price     Decimal @db.Decimal(10, 2)
+  snapshots Json? // { front: "url", back: "url" }
 
   design Design?
 

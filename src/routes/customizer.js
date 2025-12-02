@@ -4,8 +4,43 @@ import { PrismaClient } from '@prisma/client';
 const router = express.Router();
 const prisma = new PrismaClient();
 
+// GET /api/customizer/config
+// Return all printable products, variants, views, and art assets
+router.get('/config', async (req, res) => {
+  try {
+    const [products, artCategories] = await Promise.all([
+      prisma.printableProduct.findMany({
+        include: {
+          variants: {
+            include: {
+              views: true
+            }
+          }
+        }
+      }),
+      prisma.artCategory.findMany({
+        include: {
+          assets: true
+        }
+      })
+    ]);
+
+    // Fallback logic: If no products in DB, return empty array (Frontend handles fallback)
+    // or we could return the static structure here if we wanted to move logic to backend completely.
+    // For now, let's return the DB data as is.
+
+    res.json({
+      products,
+      artCategories
+    });
+  } catch (error) {
+    console.error('Error fetching customizer config:', error);
+    res.status(500).json({ error: 'Failed to fetch config' });
+  }
+});
+
 // GET /api/customizer/templates
-// Return HoodieTemplate rows grouped by color
+// Return HoodieTemplate rows grouped by color (LEGACY SUPPORT)
 router.get('/templates', async (req, res) => {
   try {
     const templates = await prisma.hoodieTemplate.findMany();
@@ -89,7 +124,9 @@ router.post('/design/create', async (req, res) => {
       json,
       thumbnailUrl,
       color,
-      size
+      size,
+      title,
+      snapshots
     } = req.body;
 
     if (!json || !thumbnailUrl || !color) {
@@ -104,10 +141,12 @@ router.post('/design/create', async (req, res) => {
       const customProduct = await prisma.customProduct.create({
         data: {
           userId: userId || null, // Optional user
+          title: title || "Custom Hoodie",
           color,
           size: size || 'M', // Default to M if not provided
           price,
           previewUrl: thumbnailUrl,
+          snapshots: snapshots || null,
           design: {
             create: {
               json,

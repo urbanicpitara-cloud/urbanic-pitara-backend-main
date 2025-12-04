@@ -120,7 +120,19 @@ router.get("/orders/:orderId/custom-product/:customProductId", async (req, res) 
     // Assuming designData structure matches the frontend state:
     // { front: [elements], back: [elements], ... }
     
+    console.log('\n🔍 Design Data Structure:');
+    console.log('   Keys:', Object.keys(designData));
+    console.log('   Has elementsBySide:', !!designData.elementsBySide);
+    
     const elementsBySide = designData.elementsBySide || designData; // Handle different potential structures
+    
+    console.log('\n📋 Elements By Side:');
+    console.log('   Keys:', Object.keys(elementsBySide));
+    for (const [side, elements] of Object.entries(elementsBySide)) {
+        if (Array.isArray(elements)) {
+            console.log(`   ${side}: ${elements.length} elements`);
+        }
+    }
 
     if (elementsBySide) {
         const imagesFolder = zip.folder("images");
@@ -134,17 +146,121 @@ router.get("/orders/:orderId/custom-product/:customProductId", async (req, res) 
 
             for (const el of elements) {
                 if (el.type === "image" && el.src) {
-                    // Download uploaded image
                     // Check if it's a data URL or remote URL
                     if (el.src.startsWith("http")) {
-                        const buffer = await downloadImage(el.src);
-                        if (buffer) {
-                            // Try to get extension from URL or default to png
-                            const ext = el.src.split('.').pop().split('?')[0] || 'png';
-                            // Clean extension if it's too long
-                            const cleanExt = ext.length > 4 ? 'png' : ext;
-                            imagesFolder.file(`${side}-image-${imgCount}.${cleanExt}`, buffer);
-                            imgCount++;
+                        const isSvg = el.src.toLowerCase().endsWith('.svg');
+                        const hasCustomizations = el.svgProperties && 
+                            (el.svgProperties.fillColor || 
+                             el.svgProperties.strokeColor || 
+                             el.svgProperties.strokeWidth !== undefined || 
+                             el.svgProperties.opacity !== undefined);
+                        
+                        console.log(`\n📦 Processing image on side "${side}": ${el.src}`);
+                        console.log(`   Is SVG: ${isSvg}`);
+                        console.log(`   Has SVG Properties: ${!!el.svgProperties}`);
+                        console.log(`   Has Customizations: ${hasCustomizations}`);
+                        if (el.svgProperties) {
+                            console.log(`   SVG Properties:`, JSON.stringify(el.svgProperties, null, 2));
+                        }
+                        
+                        if (isSvg && hasCustomizations) {
+                            // Handle customized SVG
+                            try {
+                                console.log(`   ✨ Applying SVG customizations...`);
+                                const response = await axios.get(el.src, { responseType: 'text' });
+                                let svgContent = response.data;
+                                
+                                // Parse and apply customizations
+                                const { DOMParser, XMLSerializer } = await import('@xmldom/xmldom');
+                                const parser = new DOMParser();
+                                const svgDoc = parser.parseFromString(svgContent, 'image/svg+xml');
+                                
+                                if (svgDoc.documentElement.tagName === 'svg') {
+                                    const props = el.svgProperties;
+                                    
+                                    // Helper to find elements by tag names
+                                    const findElements = (doc, selector) => {
+                                        const tags = selector.split(', ');
+                                        const elements = [];
+                                        for (const tag of tags) {
+                                            const els = doc.getElementsByTagName(tag.trim());
+                                            for (let i = 0; i < els.length; i++) {
+                                                elements.push(els[i]);
+                                            }
+                                        }
+                                        return elements;
+                                    };
+                                    
+                                    // Apply fill color
+                                    if (props.fillColor) {
+                                        const elements = findElements(svgDoc, 'path, circle, rect, ellipse, polygon, polyline, line, g');
+                                        elements.forEach((elem) => {
+                                            const currentFill = elem.getAttribute('fill');
+                                            if (currentFill !== 'none') {
+                                                elem.setAttribute('fill', props.fillColor);
+                                            }
+                                        });
+                                    }
+                                    
+                                    // Apply stroke color
+                                    if (props.strokeColor) {
+                                        const elements = findElements(svgDoc, 'path, circle, rect, ellipse, polygon, polyline, line');
+                                        elements.forEach((elem) => {
+                                            elem.setAttribute('stroke', props.strokeColor);
+                                        });
+                                    }
+                                    
+                                    // Apply stroke width
+                                    if (props.strokeWidth !== undefined) {
+                                        const elements = findElements(svgDoc, 'path, circle, rect, ellipse, polygon, polyline, line');
+                                        if (props.strokeWidth === 0) {
+                                            elements.forEach((elem) => {
+                                                elem.removeAttribute('stroke');
+                                                elem.removeAttribute('stroke-width');
+                                            });
+                                        } else {
+                                            elements.forEach((elem) => {
+                                                elem.setAttribute('stroke-width', props.strokeWidth.toString());
+                                                if (!elem.getAttribute('stroke')) {
+                                                    elem.setAttribute('stroke', '#000000');
+                                                }
+                                            });
+                                        }
+                                    }
+                                    
+                                    // Apply opacity
+                                    if (props.opacity !== undefined) {
+                                        svgDoc.documentElement.setAttribute('opacity', props.opacity.toString());
+                                    }
+                                    
+                                    const serializer = new XMLSerializer();
+                                    svgContent = serializer.serializeToString(svgDoc.documentElement);
+                                    console.log(`   ✅ Successfully applied SVG customizations`);
+                                }
+                                
+                                imagesFolder.file(`${side}-svg-${imgCount}.svg`, svgContent);
+                                console.log(`   📄 Saved as: ${side}-svg-${imgCount}.svg`);
+                                imgCount++;
+                            } catch (error) {
+                                console.error(`   ❌ Failed to process customized SVG:`, error.message);
+                                // Fallback to downloading original
+                                const buffer = await downloadImage(el.src);
+                                if (buffer) {
+                                    imagesFolder.file(`${side}-image-${imgCount}.svg`, buffer);
+                                    imgCount++;
+                                }
+                            }
+                        } else {
+                            // Regular image or non-customized SVG
+                            console.log(`   📥 Downloading original (no customizations)...`);
+                            const buffer = await downloadImage(el.src);
+                            if (buffer) {
+                                const ext = el.src.split('.').pop().split('?')[0] || 'png';
+                                const cleanExt = ext.length > 4 ? 'png' : ext;
+                                imagesFolder.file(`${side}-image-${imgCount}.${cleanExt}`, buffer);
+                                console.log(`   📄 Saved as: ${side}-image-${imgCount}.${cleanExt}`);
+                                imgCount++;
+                            }
                         }
                     }
                 } else if (el.type === "text") {

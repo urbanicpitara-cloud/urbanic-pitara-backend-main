@@ -32,8 +32,7 @@ import subscriptionsRouter from "./routes/subscriptions.js";
 import paymentRouter from "./routes/payment.js";
 import customizerRouter from "./routes/customizer.js";
 import adminCustomizerRouter from "./routes/admin-customizer.js";
-
-// ⚡ Validate environment variables FIRST (before anything else)
+import downloadAssetsRouter from "./routes/download-assets.js";
 console.log("\n🔍 Validating environment configuration...\n");
 validateEnv();
 
@@ -100,6 +99,7 @@ app.use("/menu", menuRouter);
 app.use("/cart", cartRouter);
 app.use("/customizer", customizerRouter);
 app.use("/admin/customizer", adminCustomizerRouter);
+app.use("/download-assets", downloadAssetsRouter);
 
 // ✅ Protected Routes (require authentication)
 app.use("/addresses", addressesRouter);

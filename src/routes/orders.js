@@ -297,6 +297,12 @@ router.post("/", isAuthenticated, async (req, res, next) => {
       }
     }
 
+    // ----------------- ADD COD SURCHARGE -----------------
+    const COD_SURCHARGE = 100; // ₹100 COD fee
+    if (paymentMethod && paymentMethod.toUpperCase() === "COD") {
+      subtotal += COD_SURCHARGE;
+    }
+
     const totalAmount = subtotal.toFixed(2);
     const orderNumber = `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 

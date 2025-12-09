@@ -65,14 +65,13 @@ model Collection {
 }
 
 model Product {
-  id              String      @id @default(cuid())
-  handle          String      @unique
+  id              String       @id @default(cuid())
+  handle          String       @unique
   title           String
   vendor          String?
   description     String?
   descriptionHtml String?
-  collection      Collection? @relation(fields: [collectionId], references: [id])
-  collectionId    String?
+  collections     Collection[]
 
   tags ProductTag[]
 
@@ -116,7 +115,6 @@ model Product {
   updatedAt DateTime @default(now()) @updatedAt
 
   @@index([handle])
-  @@index([collectionId])
   @@index([published])
 }
 

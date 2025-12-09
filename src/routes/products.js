@@ -33,10 +33,9 @@ router.get("/", async (req, res, next) => {
 
     // Collection filter
     if (collection) {
-      const coll = await prisma.collection.findUnique({
-        where: { handle: collection },
-      });
-      if (coll) where.collectionId = coll.id;
+      where.collections = {
+        some: { handle: collection }
+      };
     }
 
     // Tag filter
@@ -87,7 +86,7 @@ router.get("/", async (req, res, next) => {
       take,
       orderBy: { [sort]: order.toLowerCase() },
       include: {
-        collection: { select: { id: true, handle: true, title: true } },
+        collections: { select: { id: true, handle: true, title: true } },
         images: true,
         variants: true,
         tags: { include: { tag: true } },
@@ -132,7 +131,7 @@ router.get("/:handle", async (req, res, next) => {
     const product = await prisma.product.findUnique({
       where: { handle },
       include: {
-        collection: { select: { id: true, handle: true, title: true } },
+        collections: { select: { id: true, handle: true, title: true } },
         images: true,
         variants: true,
         tags: { include: { tag: true } },
@@ -161,7 +160,7 @@ router.post("/", isAuthenticated, isAdmin, async (req, res, next) => {
       title,
       descriptionHtml,
       vendor,
-      collectionId,
+      collectionIds = [],
       tags = [],
       featuredImageUrl,
       featuredImageAlt,
@@ -226,7 +225,10 @@ router.post("/", isAuthenticated, isAdmin, async (req, res, next) => {
           handle,
           title,
           vendor,
-          collectionId,
+
+          collections: {
+             connect: collectionIds.map((id) => ({ id })),
+          },
           description,
           descriptionHtml,
           featuredImageUrl,
@@ -312,7 +314,7 @@ router.post("/", isAuthenticated, isAdmin, async (req, res, next) => {
     const fullProduct = await prisma.product.findUnique({
       where: { id: product.id },
       include: {
-        collection: true,
+        collections: true,
         images: true,
         tags: { include: { tag: true } },
         options: { include: { values: true } },
@@ -435,7 +437,7 @@ router.put("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
       handle: providedHandle,
       descriptionHtml,
       vendor,
-      collectionId,
+      collectionIds,
       tags = [],
       featuredImageUrl,
       featuredImageAlt,
@@ -502,7 +504,9 @@ router.put("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
           title: title ?? existing.title,
           handle,
           vendor: vendor ?? existing.vendor,
-          collectionId: collectionId ?? existing.collectionId,
+          collections: collectionIds
+            ? { set: collectionIds.map((id) => ({ id })) }
+            : undefined,
           descriptionHtml: descriptionHtml ?? existing.descriptionHtml,
           description,
           featuredImageUrl: featuredImageUrl ?? existing.featuredImageUrl,
@@ -611,7 +615,7 @@ router.put("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
     const fullProduct = await prisma.product.findUnique({
       where: { id: updated.id },
       include: {
-        collection: true,
+        collections: true,
         images: true,
         tags: { include: { tag: true } },
         options: { include: { values: true } },
@@ -756,7 +760,11 @@ router.get("/:handle/related", async (req, res, next) => {
       const more = await prisma.product.findMany({
         where: {
           id: { notIn: [product.id, ...related.map((r) => r.id)] },
-          collectionId: product.collectionId,
+          collections: {
+            some: {
+              id: { in: product.collections?.map(c => c.id) || [] }
+            }
+          },
           published: true,
         },
         take: parseInt(limit) - related.length,

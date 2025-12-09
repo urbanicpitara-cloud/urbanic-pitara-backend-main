@@ -68,7 +68,7 @@ router.get("/:handle", async (req, res, next) => {
 
     // Count total products
     const totalProducts = await prisma.product.count({
-      where: { collectionId: collection.id },
+      where: { collections: { some: { id: collection.id } } },
     });
 
     res.json({
@@ -249,10 +249,8 @@ router.delete("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
 
     await prisma.$transaction(async (tx) => {
       // Optional: Set collectionId to null for its products
-      await tx.product.updateMany({
-        where: { collectionId: id },
-        data: { collectionId: null },
-      });
+      // M-N relation handles cleanup automatically when collection is deleted
+
 
       // Delete collection
       await tx.collection.delete({ where: { id } });
@@ -279,10 +277,14 @@ router.post("/:id/products", isAuthenticated, isAdmin, async (req, res, next) =>
     if (!exists)
       return res.status(404).json({ error: "Collection not found" });
 
-    await prisma.product.updateMany({
-      where: { id: { in: productIds } },
-      data: { collectionId: id },
-    });
+    await prisma.$transaction(
+      productIds.map((pid) =>
+        prisma.product.update({
+          where: { id: pid },
+          data: { collections: { connect: { id } } },
+        })
+      )
+    );
 
     res.json({ message: "Products added to collection successfully" });
   } catch (err) {
@@ -320,10 +322,14 @@ router.post("/:id/products/by-rule", isAuthenticated, isAdmin, async (req, res, 
     if (!products.length)
       return res.status(200).json({ message: "No products matched the criteria." });
 
-    await prisma.product.updateMany({
-      where: { id: { in: products.map(p => p.id) } },
-      data: { collectionId: id },
-    });
+    await prisma.$transaction(
+      products.map((p) =>
+        prisma.product.update({
+          where: { id: p.id },
+          data: { collections: { connect: { id } } },
+        })
+      )
+    );
 
     res.json({ message: "Products added by rule successfully", count: products.length });
   } catch (err) {
@@ -347,10 +353,14 @@ router.delete("/:id/products", isAuthenticated, isAdmin, async (req, res, next) 
     if (!exists)
       return res.status(404).json({ error: "Collection not found" });
 
-    await prisma.product.updateMany({
-      where: { id: { in: productIds }, collectionId: id },
-      data: { collectionId: null },
-    });
+    await prisma.$transaction(
+      productIds.map((pid) =>
+        prisma.product.update({
+          where: { id: pid },
+          data: { collections: { disconnect: { id } } },
+        })
+      )
+    );
 
     res.json({ message: "Products removed from collection successfully" });
   } catch (err) {

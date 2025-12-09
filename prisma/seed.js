@@ -85,7 +85,9 @@ async function seed() {
           vendor: record.Vendor,
           published: record.Published === 'TRUE',
           publishedAt: record.Published === 'TRUE' ? new Date() : null,
-          collectionId: defaultCollection.id,
+          collections: {
+            connect: { id: defaultCollection.id }
+          },
           featuredImageUrl: record['Image Src'],
           featuredImageAlt: record['Image Alt Text'],
           minPriceAmount: minPrice,

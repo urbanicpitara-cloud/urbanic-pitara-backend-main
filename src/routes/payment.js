@@ -5,41 +5,108 @@ import { promises as dnsPromises } from 'dns';
 import prisma from "../lib/prisma.js";
 import { isAuthenticated, isAdmin } from '../middleware/auth.js';
 import {
-  initiatePayment,
-  checkPaymentStatus,
-  verifyCallback,
+  initiatePayment as initiatePhonePe,
+  checkPaymentStatus as checkPhonePeStatus,
+  verifyCallback as verifyPhonePeCallback,
 } from '../lib/phonepe.js';
+import * as razorpay from '../lib/razorpay.js';
+import * as stripe from '../lib/stripe.js';
 
 const router = Router();
 
 /**
  * Initiate payment
  * POST /api/payment/initiate
+ * Supports multiple providers: PHONEPE, RAZORPAY, STRIPE
  */
 router.post('/initiate', isAuthenticated, async (req, res) => {
   try {
-    const { amount, orderId } = req.body;
+    const { amount, orderId, provider = 'PHONEPE' } = req.body;
 
     if (!amount || amount <= 0) {
       return res.status(400).json({ error: 'Invalid amount' });
     }
 
-    // Generate a unique transaction ID
-    const merchantTransactionId = `${orderId}_${uuidv4().replace(/-/g, '')}`;
-
-    // Get callback and redirect URLs from request or use defaults
-    const callbackUrl = req.body.callbackUrl || `${process.env.BACKEND_URL || 'http://localhost:4000'}/payment/callback`;
+    const providerUpper = provider.toUpperCase();
     const redirectUrl = req.body.redirectUrl || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment/status`;
 
-    // Initiate payment with PhonePe
-    const response = await initiatePayment({
+    // Handle different payment providers
+    if (providerUpper === 'RAZORPAY') {
+      // Razorpay integration
+      const razorpayOrder = await razorpay.createOrder({
+        amount,
+        orderId,
+        currency: 'INR',
+      });
+
+      // Store transaction
+      await prisma.transaction.create({
+        data: {
+          id: razorpayOrder.id,
+          amount: new Prisma.Decimal(amount),
+          orderId,
+          userId: req.user.id,
+          status: 'PENDING',
+          provider: 'RAZORPAY',
+        },
+      });
+
+      return res.json({
+        success: true,
+        provider: 'RAZORPAY',
+        data: {
+          orderId: razorpayOrder.id,
+          amount: razorpayOrder.amount,
+          currency: razorpayOrder.currency,
+          keyId: razorpay.getKeyId(),
+          transactionId: razorpayOrder.id,
+        },
+      });
+    }
+
+    if (providerUpper === 'STRIPE') {
+      // Stripe integration
+      const paymentIntent = await stripe.createPaymentIntent({
+        amount,
+        orderId,
+        currency: 'inr',
+        customerEmail: req.user.email,
+      });
+
+      // Store transaction
+      await prisma.transaction.create({
+        data: {
+          id: paymentIntent.id,
+          amount: new Prisma.Decimal(amount),
+          orderId,
+          userId: req.user.id,
+          status: 'PENDING',
+          provider: 'STRIPE',
+        },
+      });
+
+      return res.json({
+        success: true,
+        provider: 'STRIPE',
+        data: {
+          clientSecret: paymentIntent.client_secret,
+          publishableKey: stripe.getPublishableKey(),
+          transactionId: paymentIntent.id,
+        },
+      });
+    }
+
+    // Default: PhonePe
+    const merchantTransactionId = `${orderId}_${uuidv4().replace(/-/g, '')}`;
+    const callbackUrl = req.body.callbackUrl || `${process.env.BACKEND_URL || 'http://localhost:4000'}/payment/callback`;
+
+    const response = await initiatePhonePe({
       amount,
       merchantTransactionId,
       callbackUrl,
       redirectUrl,
     });
 
-    // Store transaction details (amount as Decimal)
     await prisma.transaction.create({
       data: {
         id: merchantTransactionId,
@@ -51,7 +118,6 @@ router.post('/initiate', isAuthenticated, async (req, res) => {
       },
     });
 
-    // Safely extract redirect URL from provider response
     let providerRedirectUrl = null;
     try {
       providerRedirectUrl =
@@ -68,23 +134,18 @@ router.post('/initiate', isAuthenticated, async (req, res) => {
       return res.status(500).json({ success: false, error: 'Payment initiation failed: unexpected provider response' });
     }
 
-    // Try resolving the provider redirect host. Some PhonePe sandbox redirect domains
-    // (eg. sandbox.phonepe.com) may not be reachable from the user's network or may
-    // fail DNS. If the host cannot be resolved, fall back to our frontend redirectUrl
-    // so the user isn't sent to a dead page during testing.
     try {
       const url = new URL(providerRedirectUrl);
       const hostname = url.hostname;
-      // perform DNS lookup with a short timeout by using Promise.race
       await dnsPromises.lookup(hostname);
     } catch (dnsErr) {
       console.warn('Provider redirect host not resolvable, falling back to frontend redirectUrl:', dnsErr?.message || dnsErr);
       providerRedirectUrl = redirectUrl || providerRedirectUrl;
     }
 
-    // Return the payment URL to frontend
     res.json({
       success: true,
+      provider: 'PHONEPE',
       data: {
         redirectUrl: providerRedirectUrl,
         transactionId: merchantTransactionId,
@@ -111,7 +172,7 @@ router.post('/callback', async (req, res) => {
     const xVerify = req.headers['x-verify'];
 
     // Verify callback signature
-    if (!verifyCallback(response, xVerify)) {
+    if (!verifyPhonePeCallback(response, xVerify)) {
       return res.status(400).json({ error: 'Invalid signature' });
     }
 
@@ -119,7 +180,7 @@ router.post('/callback', async (req, res) => {
     const { merchantTransactionId, code, status } = payload;
 
     // Check payment status with PhonePe
-    const statusResponse = await checkPaymentStatus(merchantTransactionId);
+    const statusResponse = await checkPhonePeStatus(merchantTransactionId);
     const phonepeStatus = statusResponse.data.state; // COMPLETED, FAILED, etc.
 
     // Map PhonePe status to our Payment status enum
@@ -180,6 +241,160 @@ router.post('/callback', async (req, res) => {
       success: false,
       error: 'Payment callback processing failed',
     });
+  }
+});
+
+/**
+ * Razorpay payment verification
+ * POST /api/payment/verify/razorpay
+ */
+router.post('/verify/razorpay', isAuthenticated, async (req, res) => {
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Verify signature
+    const isValid = razorpay.verifyPaymentSignature({
+      razorpayOrderId: razorpay_order_id,
+      razorpayPaymentId: razorpay_payment_id,
+      razorpaySignature: razorpay_signature,
+    });
+
+    if (!isValid) {
+      return res.status(400).json({ error: 'Invalid signature' });
+    }
+
+    // Get transaction
+    const transaction = await prisma.transaction.findUnique({
+      where: { id: razorpay_order_id },
+    });
+
+    if (!transaction) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+
+    // Update transaction
+    await prisma.transaction.update({
+      where: { id: razorpay_order_id },
+      data: {
+        status: 'COMPLETED',
+        responseCode: razorpay_payment_id,
+        updatedAt: new Date(),
+      },
+    });
+
+    // Update payment
+    const payment = await prisma.payment.findFirst({
+      where: { orderId: transaction.orderId },
+    });
+
+    if (payment) {
+      await prisma.payment.update({
+        where: { id: payment.id },
+        data: {
+          status: 'PAID',
+          providerPaymentId: razorpay_payment_id,
+          updatedAt: new Date(),
+        },
+      });
+
+      // Update order status
+      await prisma.order.update({
+        where: { id: transaction.orderId },
+        data: { status: 'PROCESSING' },
+      });
+    }
+
+    res.json({ success: true, verified: true });
+  } catch (error) {
+    console.error('Razorpay verification error:', error);
+    res.status(500).json({ success: false, error: 'Verification failed' });
+  }
+});
+
+/**
+ * Stripe payment confirmation
+ * POST /api/payment/confirm/stripe
+ */
+router.post('/confirm/stripe', isAuthenticated, async (req, res) => {
+  try {
+    const { payment_intent_id } = req.body;
+
+    if (!payment_intent_id) {
+      return res.status(400).json({ error: 'Missing payment intent ID' });
+    }
+
+    // Retrieve payment intent from Stripe
+    const paymentIntent = await stripe.retrievePaymentIntent(payment_intent_id);
+
+    // Get transaction
+    const transaction = await prisma.transaction.findUnique({
+      where: { id: payment_intent_id },
+    });
+
+    if (!transaction) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+
+    // Map Stripe status
+    const statusMap = {
+      succeeded: 'COMPLETED',
+      processing: 'PENDING',
+      requires_payment_method: 'PENDING',
+      requires_confirmation: 'PENDING',
+      requires_action: 'PENDING',
+      canceled: 'FAILED',
+      failed: 'FAILED',
+    };
+
+    const transactionStatus = statusMap[paymentIntent.status] || 'PENDING';
+    const paymentStatus = paymentIntent.status === 'succeeded' ? 'PAID' : 'INITIATED';
+
+    // Update transaction
+    await prisma.transaction.update({
+      where: { id: payment_intent_id },
+      data: {
+        status: transactionStatus,
+        responseCode: paymentIntent.status,
+        updatedAt: new Date(),
+      },
+    });
+
+    // Update payment
+    const payment = await prisma.payment.findFirst({
+      where: { orderId: transaction.orderId },
+    });
+
+    if (payment) {
+      await prisma.payment.update({
+        where: { id: payment.id },
+        data: {
+          status: paymentStatus,
+          providerPaymentId: payment_intent_id,
+          updatedAt: new Date(),
+        },
+      });
+
+      // Update order status if payment succeeded
+      if (paymentIntent.status === 'succeeded') {
+        await prisma.order.update({
+          where: { id: transaction.orderId },
+          data: { status: 'PROCESSING' },
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      status: paymentIntent.status,
+      paymentStatus,
+    });
+  } catch (error) {
+    console.error('Stripe confirmation error:', error);
+    res.status(500).json({ success: false, error: 'Confirmation failed' });
   }
 });
 

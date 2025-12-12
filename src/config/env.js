@@ -66,6 +66,7 @@ const REQUIRED_ENV_VARS = [
   
   // Optional Security
   { key: "TRUST_PROXY", required: false, default: "false" },
+  { key: "COOKIE_DOMAIN", required: false },
 ];
 
 /**

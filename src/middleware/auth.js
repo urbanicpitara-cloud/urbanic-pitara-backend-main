@@ -66,9 +66,7 @@ export const generateToken = (userId) => {
 };
 
 export const setAuthCookie = (res, token) => {
-  const domain = process.env.NODE_ENV === 'production' 
-    ? '.render.com'  // Adjust this to match your Render.com domain
-    : 'localhost';
+  const domain = process.env.COOKIE_DOMAIN || undefined;
 
   // Set HTTP-only cookie with token
   res.cookie('token', token, {
@@ -81,9 +79,7 @@ export const setAuthCookie = (res, token) => {
 };
 
 export const clearAuthCookie = (res) => {
-  const domain = process.env.NODE_ENV === 'production' 
-    ? '.render.com'  // Adjust this to match your Render.com domain
-    : 'localhost';
+  const domain = process.env.COOKIE_DOMAIN || undefined;
 
   res.clearCookie('token', {
     httpOnly: true,

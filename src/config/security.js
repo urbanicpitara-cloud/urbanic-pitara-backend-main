@@ -19,7 +19,15 @@ function getCorsOrigins() {
   if (isProductionMode()) {
     // Production: Only allow exact domains (no wildcards!)
     // Example: ["https://urbanic-pitara.com", "https://admin.urbanic-pitara.com"]
-    return [corsOrigin];
+    const origins = [corsOrigin];
+    
+    // Also allow FRONTEND_URL if set and different from CORS_ORIGIN
+    const frontendUrl = process.env.FRONTEND_URL;
+    if (frontendUrl && frontendUrl !== corsOrigin) {
+      origins.push(frontendUrl);
+    }
+    
+    return origins;
   }
 
   // Development: Allow localhost and dev tunnels

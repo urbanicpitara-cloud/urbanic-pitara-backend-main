@@ -126,7 +126,8 @@ router.get("/", async (req, res, next) => {
           maxAge: 30 * 24 * 60 * 60 * 1000,
           httpOnly: true,
           secure: process.env.NODE_ENV === "production",
-          sameSite: "lax",
+          sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+          domain: process.env.NODE_ENV === "production" ? process.env.COOKIE_DOMAIN : undefined,
         });
       }
     }
@@ -198,7 +199,8 @@ router.post("/lines", async (req, res, next) => {
           maxAge: 30 * 24 * 60 * 60 * 1000,
           httpOnly: true,
           secure: process.env.NODE_ENV === "production",
-          sameSite: "lax",
+          sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+          domain: process.env.NODE_ENV === "production" ? process.env.COOKIE_DOMAIN : undefined,
         });
       }
     }

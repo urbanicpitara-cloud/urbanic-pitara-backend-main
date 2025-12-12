@@ -478,6 +478,129 @@ router.get('/status/:transactionId', isAuthenticated, async (req, res) => {
   }
 });
 
+/**
+ * Initiate a refund for a payment
+ * POST /:paymentId/refund (mounted at /admin/payment)
+ * Admin only - processes real refunds through payment providers
+ */
+router.post('/:paymentId/refund', isAuthenticated, isAdmin, async (req, res, next) => {
+  try {
+    const { paymentId } = req.params;
+    const { amount, reason } = req.body;
+
+    // Validate input
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ error: 'Invalid refund amount' });
+    }
+
+    // Get payment from database
+    const payment = await prisma.payment.findUnique({
+      where: { id: paymentId },
+      include: { order: true }
+    });
+
+    if (!payment) {
+      return res.status(404).json({ error: 'Payment not found' });
+    }
+
+    // Check if payment is eligible for refund
+    if (payment.status !== 'PAID') {
+      return res.status(400).json({ error: 'Only PAID payments can be refunded' });
+    }
+
+    if (payment.refundId) {
+      return res.status(400).json({ error: 'Payment already refunded' });
+    }
+
+    // Check refund amount doesn't exceed payment amount
+    const paymentAmount = Number(payment.amount);
+    const refundAmount = Number(amount);
+    
+    if (refundAmount > paymentAmount) {
+      return res.status(400).json({ 
+        error: `Refund amount (${refundAmount}) cannot exceed payment amount (${paymentAmount})` 
+      });
+    }
+
+    // Initiate refund with payment provider
+    let refundResponse;
+    const amountInPaise = Math.round(refundAmount * 100); // Convert to paise
+
+    // Determine provider from provider field or payment method
+    const provider = payment.provider?.toUpperCase() || payment.method?.toUpperCase();
+    
+    if (!provider) {
+      return res.status(400).json({ 
+        error: 'Cannot determine payment provider. Payment may be too old or invalid.' 
+      });
+    }
+
+    switch (provider) {
+      case 'RAZORPAY':
+        if (!payment.providerPaymentId) {
+          return res.status(400).json({ error: 'Missing Razorpay payment ID' });
+        }
+        refundResponse = await razorpay.createRefund(payment.providerPaymentId, amountInPaise, reason);
+        break;
+
+      case 'STRIPE':
+        if (!payment.providerPaymentId) {
+          return res.status(400).json({ error: 'Missing Stripe payment intent ID' });
+        }
+        refundResponse = await stripe.createRefund(payment.providerPaymentId, amountInPaise, reason);
+        break;
+
+      case 'PHONEPE':
+        return res.status(400).json({ error: 'PhonePe refunds must be processed manually through PhonePe dashboard' });
+
+      case 'COD':
+        return res.status(400).json({ error: 'Cannot refund COD payments through system - process cash refund manually' });
+
+      default:
+        return res.status(400).json({ 
+          error: `Refunds not supported for payment method: ${provider}. Please process refund manually.` 
+        });
+    }
+
+    // Update payment record with refund details
+    const updatedPayment = await prisma.payment.update({
+      where: { id: paymentId },
+      data: {
+        status: 'REFUNDED',
+        refundId: refundResponse.id,
+        refundAmount: new Prisma.Decimal(refundAmount),
+        refundedAt: new Date(),
+        refundReason: reason || 'Admin initiated refund'
+      }
+    });
+
+    // Update order status to REFUNDED
+    if (payment.orderId) {
+      await prisma.order.update({
+        where: { id: payment.orderId },
+        data: { status: 'REFUNDED' }
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Refund initiated successfully',
+      payment: {
+        id: updatedPayment.id,
+        status: updatedPayment.status,
+        refundId: updatedPayment.refundId,
+        refundAmount: Number(updatedPayment.refundAmount),
+        refundedAt: updatedPayment.refundedAt
+      },
+      refund: refundResponse
+    });
+
+  } catch (error) {
+    console.error('Refund error:', error);
+    next(error);
+  }
+});
+
 export default router;
 
 /**

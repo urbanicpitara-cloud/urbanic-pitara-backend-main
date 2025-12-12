@@ -20,7 +20,14 @@ const sanitizeUser = (user) => {
 };
 
 /** Utility to validate email and password strength */
-const isStrongPassword = (password) => password.length >= 6; // You can use zxcvbn or stricter rules
+const isStrongPassword = (password) => {
+  // At least 8 characters, 1 uppercase, 1 lowercase, 1 number
+  if (password.length < 8) return false;
+  if (!/[A-Z]/.test(password)) return false;
+  if (!/[a-z]/.test(password)) return false;
+  if (!/[0-9]/.test(password)) return false;
+  return true;
+};
 
 /**
  * Helper: sendResetEmail
@@ -75,7 +82,7 @@ router.post(["/register", "/signup"], async (req, res, next) => {
     if (!isStrongPassword(password))
       return res
         .status(400)
-        .json({ error: "Password must be at least 6 characters long" });
+        .json({ error: "Password must be at least 8 characters long and contain uppercase, lowercase, and numbers" });
 
     // Check if user already exists
     const existing = await prisma.user.findUnique({ where: { email } });
@@ -184,7 +191,7 @@ router.put("/change-password", isAuthenticated, async (req, res, next) => {
     if (!isStrongPassword(newPassword))
       return res
         .status(400)
-        .json({ error: "New password must be at least 6 characters long" });
+        .json({ error: "New password must be at least 8 characters long and contain uppercase, lowercase, and numbers" });
 
     const valid = await bcrypt.compare(currentPassword, req.user.passwordHash);
     if (!valid)

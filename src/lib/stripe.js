@@ -227,6 +227,48 @@ export const isConfigured = () => {
 };
 
 /**
+ * Initiate a refund for a Stripe payment
+ * @param {string} paymentIntentId - Stripe payment intent ID
+ * @param {number} amount - Amount to refund in paise (smallest currency unit)
+ * @param {string} reason - Reason for refund
+ * @returns {Promise<Object>} Refund object
+ */
+export const createRefund = async (paymentIntentId, amount, reason = 'requested_by_customer') => {
+  try {
+    // Mock mode: simulate refund
+    if (useMockMode()) {
+      console.log('📌 Stripe Mock: Simulating refund', { paymentIntentId, amount, reason });
+      return {
+        id: `re_mock_${Date.now()}`,
+        object: 'refund',
+        payment_intent: paymentIntentId,
+        amount: amount,
+        currency: 'inr',
+        status: 'succeeded',
+        reason: reason,
+        created: Math.floor(Date.now() / 1000),
+        metadata: { reason }
+      };
+    }
+
+    // Real mode: create actual Stripe refund
+    const stripe = getStripeInstance();
+    const refund = await stripe.refunds.create({
+      payment_intent: paymentIntentId,
+      amount: amount, // Amount in paise
+      reason: reason,
+      metadata: { reason }
+    });
+    
+    console.log('✅ Stripe: Refund created', refund.id);
+    return refund;
+  } catch (error) {
+    console.error('❌ Stripe: Refund failed', error);
+    throw new Error(`Stripe refund failed: ${error.message}`);
+  }
+};
+
+/**
  * Get publishable key for frontend
  * @returns {string|null} Publishable key or mock key
  */
@@ -241,6 +283,7 @@ export default {
   confirmPaymentIntent,
   verifyWebhookSignature,
   cancelPaymentIntent,
+  createRefund,
   isConfigured,
   getPublishableKey,
   useMockMode,

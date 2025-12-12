@@ -422,6 +422,13 @@ model Payment {
   currency          String
   status            PaymentStatus @default(NONE) // "INITIATED", "PAID", "FAILED", "REFUNDED" "NONE"
   rawResponse       Json?
+  
+  // Refund tracking fields
+  refundId          String?   // Provider's refund ID (Razorpay refund_id, Stripe refund_id)
+  refundAmount      Decimal?  @db.Decimal(10, 2) // Amount refunded
+  refundedAt        DateTime? // When refund was processed
+  refundReason      String?   // Admin's reason for refund
+  
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @default(now()) @updatedAt
   transaction       Transaction?

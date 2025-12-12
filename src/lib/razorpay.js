@@ -198,6 +198,48 @@ export const isConfigured = () => {
 };
 
 /**
+ * Initiate a refund for a Razorpay payment
+ * @param {string} paymentId - Razorpay payment ID (pay_xxx)
+ * @param {number} amount - Amount to refund in paise (smallest currency unit)
+ * @param {string} reason - Reason for refund
+ * @returns {Promise<Object>} Refund object
+ */
+export const createRefund = async (paymentId, amount, reason = 'requested_by_customer') => {
+  try {
+    // Mock mode: simulate refund
+    if (useMockMode()) {
+      console.log('📌 Razorpay Mock: Simulating refund', { paymentId, amount, reason });
+      return {
+        id: `rfnd_mock_${Date.now()}`,
+        entity: 'refund',
+        payment_id: paymentId,
+        amount: amount,
+        currency: 'INR',
+        status: 'processed',
+        speed_requested: 'normal',
+        speed_processed: 'normal',
+        created_at: Math.floor(Date.now() / 1000),
+        notes: { reason }
+      };
+    }
+
+    // Real mode: create actual Razorpay refund
+    const razorpay = getRazorpayInstance();
+    const refund = await razorpay.payments.refund(paymentId, {
+      amount: amount, // Amount in paise
+      speed: 'normal',
+      notes: { reason }
+    });
+    
+    console.log('✅ Razorpay: Refund created', refund.id);
+    return refund;
+  } catch (error) {
+    console.error('❌ Razorpay: Refund failed', error);
+    throw new Error(`Razorpay refund failed: ${error.error?.description || error.message}`);
+  }
+};
+
+/**
  * Get Razorpay key ID for frontend
  * @returns {string|null} Key ID or null if mock mode
  */
@@ -211,6 +253,7 @@ export default {
   verifyPaymentSignature,
   verifyWebhookSignature,
   fetchPayment,
+  createRefund,
   isConfigured,
   getKeyId,
   useMockMode,

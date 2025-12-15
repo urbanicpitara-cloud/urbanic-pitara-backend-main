@@ -50,14 +50,12 @@ const REQUIRED_ENV_VARS = [
   { key: "FROM_EMAIL", required: false },
   
   // PhonePe Payment Gateway
-  { key: "PHONEPE_MERCHANT_ID", required: true },
   { key: "PHONEPE_SALT_KEY", required: true },
   { key: "PHONEPE_SALT_INDEX", required: false, default: "1" },
   { key: "PHONEPE_ENV", required: false, default: "UAT" },
-  { key: "PHONEPE_API_URL", required: false, default: "https://api-preprod.phonepe.com/apis/pg-sandbox" },
-  { key: "PHONEPE_TOKEN_URL", required: false, default: "https://api-preprod.phonepe.com/apis/pg-sandbox" },
-  { key: "PHONEPE_CLIENT_ID", required: false },
-  { key: "PHONEPE_CLIENT_SECRET", required: false },
+  { key: "PHONEPE_CLIENT_ID", required: true },
+  { key: "PHONEPE_CLIENT_SECRET", required: true },
+
   { key: "PHONEPE_CLIENT_VERSION", required: false, default: "v1" },
   { key: "PHONEPE_MOCK", required: false, default: "true" },
   

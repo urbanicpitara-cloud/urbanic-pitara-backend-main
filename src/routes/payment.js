@@ -28,7 +28,8 @@ router.post('/initiate', isAuthenticated, async (req, res) => {
     }
 
     const providerUpper = provider.toUpperCase();
-    const redirectUrl = req.body.redirectUrl || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment/status`;
+    // const redirectUrl removed to prevent redeclaration conflict
+
 
     // Handle different payment providers
     if (providerUpper === 'RAZORPAY') {
@@ -99,6 +100,10 @@ router.post('/initiate', isAuthenticated, async (req, res) => {
     // Default: PhonePe
     const merchantTransactionId = `${orderId}_${uuidv4().replace(/-/g, '')}`;
     const callbackUrl = req.body.callbackUrl || `${process.env.BACKEND_URL || 'http://localhost:4000'}/payment/callback`;
+    
+    // Ensure redirectUrl has the transaction ID for the frontend to derive status
+    const baseUrl = req.body.redirectUrl || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment/status`;
+    const redirectUrl = `${baseUrl}?transactionId=${merchantTransactionId}`;
 
     const response = await initiatePhonePe({
       amount,
@@ -421,7 +426,7 @@ router.get('/status/:transactionId', isAuthenticated, async (req, res) => {
     }
 
     // Check latest status from PhonePe
-    const response = await checkPaymentStatus(transactionId);
+    const response = await checkPhonePeStatus(transactionId);
     const phonepeStatus = response.data.state;
 
     // Map PhonePe status to our Payment status enum

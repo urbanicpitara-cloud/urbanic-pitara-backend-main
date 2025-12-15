@@ -382,13 +382,13 @@ router.put("/bulk-update", isAuthenticated, isAdmin, async (req, res, next) => {
 
     // ✅ Handle tags (merge new tags, don’t remove existing)
     if (updates.tags && Array.isArray(updates.tags) && updates.tags.length > 0) {
-      await prisma.$transaction(async (tx) => {
+      try {
         // 1️⃣ Ensure all tags exist or create missing ones
         const tags = [];
         for (const tagHandle of updates.tags) {
-          let tag = await tx.tag.findUnique({ where: { handle: tagHandle } });
+          let tag = await prisma.tag.findUnique({ where: { handle: tagHandle } });
           if (!tag) {
-            tag = await tx.tag.create({
+            tag = await prisma.tag.create({
               data: {
                 handle: tagHandle,
                 name: tagHandle
@@ -400,20 +400,31 @@ router.put("/bulk-update", isAuthenticated, isAdmin, async (req, res, next) => {
           tags.push(tag);
         }
 
-        // 2️⃣ Attach tags to each selected product if not already linked
-        for (const id of ids) {
-          for (const tag of tags) {
-            const exists = await tx.productTag.findFirst({
-              where: { productId: id, tagId: tag.id },
-            });
-            if (!exists) {
-              await tx.productTag.create({
-                data: { productId: id, tagId: tag.id },
+        // 2️⃣ Attach tags to each selected product in BULK
+        // Use createMany with skipDuplicates for massive performance boost (1 query vs N*M)
+        if (ids.length > 0 && tags.length > 0) {
+          const productTagsToCreate = [];
+          
+          for (const id of ids) {
+            for (const tag of tags) {
+              productTagsToCreate.push({
+                productId: id,
+                tagId: tag.id
               });
             }
           }
+
+          if (productTagsToCreate.length > 0) {
+            await prisma.productTag.createMany({
+              data: productTagsToCreate,
+              skipDuplicates: true, // Only creates if relation doesn't exist
+            });
+          }
         }
-      });
+      } catch (err) {
+        console.error("Warning: Tag update failed partially", err);
+        // Don't fail the whole request if tags fail
+      }
     }
 
     // ✅ Handle bulk price update for product variants

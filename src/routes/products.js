@@ -349,13 +349,28 @@ router.put("/bulk-update", isAuthenticated, isAdmin, async (req, res, next) => {
     if (!updates || typeof updates !== "object")
       return res.status(400).json({ error: "No update data provided." });
 
-    // 🧩 Define relational fields to handle separately
-    const relational = ["tags", "variants", "images", "options"];
+    // 🧩 Define relational fields AND fields that don't exist on Product model
+    const relational = ["tags", "variants", "images", "options", "priceAmount", "compareAmount"];
 
     // 🧩 Extract non-relational update data
     const productUpdateData = Object.fromEntries(
       Object.entries(updates).filter(([key]) => !relational.includes(key))
     );
+
+    // If priceAmount is provided, we need to update min/max fields on the Product model
+    if (updates.priceAmount) {
+      productUpdateData.minPriceAmount = updates.priceAmount;
+      productUpdateData.maxPriceAmount = updates.priceAmount;
+      productUpdateData.minPriceCurrency = "INR"; // Default currency
+      productUpdateData.maxPriceCurrency = "INR";
+    }
+
+    if (updates.compareAmount) {
+      productUpdateData.compareMinAmount = updates.compareAmount;
+      productUpdateData.compareMaxAmount = updates.compareAmount;
+      productUpdateData.compareMinCurrency = "INR";
+      productUpdateData.compareMaxCurrency = "INR";
+    }
 
     // ✅ Update scalar fields for all selected products
     if (Object.keys(productUpdateData).length > 0) {

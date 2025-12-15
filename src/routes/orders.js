@@ -87,7 +87,9 @@ const mapOrderItem = (item) => ({
     handle: item.product.handle,
     featuredImage: item.product.featuredImageUrl
       ? { url: item.product.featuredImageUrl, altText: item.product.featuredImageAlt }
-      : null,
+      : (item.product.images && item.product.images.length > 0)
+        ? { url: item.product.images[0].url, altText: item.product.images[0].altText }
+        : null,
   } : (item.customProduct ? {
     id: item.customProduct.id,
     title: item.customProduct.title,
@@ -123,7 +125,7 @@ router.get("/", isAuthenticated, async (req, res, next) => {
       where: { userId: req.user.id },
       orderBy: { placedAt: "desc" },
       include: {
-        items: { include: { product: true, variant: true, customProduct: true } },
+        items: { include: { product: { include: { images: { take: 1 } } }, variant: true, customProduct: true } },
         shippingAddress: true,
         billingAddress: true,
         payment: true,
@@ -167,7 +169,7 @@ router.get("/:id", isAuthenticated, async (req, res, next) => {
         user: {
           select: { id: true, email: true, firstName: true, lastName: true },
         },
-        items: { include: { product: true, variant: true, customProduct: true } },
+        items: { include: { product: { include: { images: { take: 1 } } }, variant: true, customProduct: true } },
         shippingAddress: true,
         billingAddress: true,
         payment: true,
@@ -363,7 +365,7 @@ router.post("/", isAuthenticated, async (req, res, next) => {
           },
         },
         include: {
-          items: { include: { product: true, variant: true, customProduct: true } },
+          items: { include: { product: { include: { images: { take: 1 } } }, variant: true, customProduct: true } },
           shippingAddress: true,
           billingAddress: true,
           appliedDiscount: true,
@@ -474,7 +476,7 @@ router.post("/:id/cancel", isAuthenticated, async (req, res, next) => {
 
     const order = await prisma.order.findFirst({ 
       where: { id, userId: req.user.id },
-      include: { items: { include: { product: true, variant: true, customProduct: true } } },
+      include: { items: { include: { product: { include: { images: { take: 1 } } }, variant: true, customProduct: true } } },
     });
     if (!order) return res.status(404).json({ error: "Order not found" });
     if (!["PENDING", "PROCESSING"].includes(order.status))
@@ -571,7 +573,7 @@ router.get("/admin/all", isAuthenticated,isAdmin, async (req, res, next) => {
           user: {
             select: { id: true, email: true, firstName: true, lastName: true },
           },
-          items: { include: { product: true, variant: true, customProduct: true } },
+          items: { include: { product: { include: { images: { take: 1 } } }, variant: true, customProduct: true } },
           shippingAddress: true,
           billingAddress: true,
           payment: true,
@@ -690,7 +692,7 @@ router.put("/admin/:id", isAuthenticated, isAdmin, async (req, res, next) => {
       data: parsed,
       include: {
         user: { select: { id: true, email: true, firstName: true, lastName: true } },
-        items: { include: { product: true, variant: true, customProduct: true } },
+        items: { include: { product: { include: { images: { take: 1 } } }, variant: true, customProduct: true } },
         shippingAddress: true,
         billingAddress: true,
         payment: true,
@@ -748,7 +750,7 @@ router.put("/admin/:id/status", isAuthenticated, async (req, res, next) => {
       },
       include: {
         user: { select: { id: true, email: true, firstName: true, lastName: true } },
-        items: { include: { product: true, variant: true, customProduct: true } },
+        items: { include: { product: { include: { images: { take: 1 } } }, variant: true, customProduct: true } },
         shippingAddress: true,
         billingAddress: true,
       },

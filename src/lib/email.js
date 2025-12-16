@@ -21,6 +21,14 @@ const createTransporter = () => {
     port,
     secure: port === 465, // true for 465, false for other ports
     auth: { user, pass },
+    tls: {
+      ciphers: 'SSLv3', // Help with some older protocols
+    },
+    ignoreTLS: false,
+    requireTLS: true,
+    connectionTimeout: 10000, // 10 seconds
+    greetingTimeout: 5000, // 5 seconds
+    socketTimeout: 10000, // 10 seconds
   });
 };
 

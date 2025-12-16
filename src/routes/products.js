@@ -2,6 +2,7 @@ import { Router } from "express";
 import prisma from "../lib/prisma.js";
 import { isAuthenticated, isAdmin } from "../middleware/auth.js";
 import { stripHtml } from "string-strip-html";
+import { cache } from "../lib/redis.js";
 const router = Router();
 
 /**
@@ -23,6 +24,16 @@ router.get("/", async (req, res, next) => {
       published,
       all, // 🆕 allow all=true or limit=all
     } = req.query;
+
+    // Create cache key from query params
+    const cacheKey = `products:${JSON.stringify(req.query)}`;
+    
+    // Try to get from cache first
+    const cached = await cache.get(cacheKey);
+    if (cached) {
+      res.set('X-Cache', 'HIT');
+      return res.json(cached);
+    }
 
     const fetchAll = all === "true" || limit === "all";
 
@@ -100,7 +111,7 @@ router.get("/", async (req, res, next) => {
       tags: p.tags ? p.tags.map((t) => t.tag) : [],
     }));
 
-    res.json({
+    const response = {
       products: formatted,
       pagination: fetchAll
         ? null
@@ -110,7 +121,14 @@ router.get("/", async (req, res, next) => {
             limit: parseInt(limit),
             pages: Math.ceil(total / parseInt(limit)),
           },
-    });
+    };
+
+    // Cache for 5 minutes (300 seconds)
+    await cache.set(cacheKey, response, 300);
+    res.set('X-Cache', 'MISS');
+    res.set('Cache-Control', 'public, max-age=300, s-maxage=600');
+    
+    res.json(response);
   } catch (err) {
     console.error(err);
     next(err);
@@ -128,6 +146,14 @@ router.get("/:handle", async (req, res, next) => {
   try {
     const { handle } = req.params;
 
+    // Try cache first
+    const cacheKey = `product:${handle}`;
+    const cached = await cache.get(cacheKey);
+    if (cached) {
+      res.set('X-Cache', 'HIT');
+      return res.json(cached);
+    }
+
     const product = await prisma.product.findUnique({
       where: { handle },
       include: {
@@ -141,10 +167,17 @@ router.get("/:handle", async (req, res, next) => {
 
     if (!product) return res.status(404).json({ error: "Product not found" });
 
-    res.json({
+    const response = {
       ...product,
       tags: product.tags.map((t) => t.tag),
-    });
+    };
+
+    // Cache for 10 minutes
+    await cache.set(cacheKey, response, 600);
+    res.set('X-Cache', 'MISS');
+    res.set('Cache-Control', 'public, max-age=600, s-maxage=1200');
+    
+    res.json(response);
   } catch (err) {
     next(err);
   }
@@ -649,6 +682,10 @@ router.put("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
       },
     });
 
+    // Invalidate cache
+    await cache.del(`product:${updated.handle}`);
+    await cache.delPattern('products:*'); // Clear all product list caches
+
     res.json({
       ...fullProduct,
       tags: fullProduct.tags.map((t) => t.tag),
@@ -744,6 +781,10 @@ router.delete("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
       await tx.orderItem.deleteMany({ where: { productId: id } });
       await tx.product.delete({ where: { id } });
     });
+
+    // Invalidate cache
+    await cache.del(`product:${product.handle}`);
+    await cache.delPattern('products:*');
 
     res.status(200).json({success:true,message:"Product Deleted Successfully"});
   } catch (err) {

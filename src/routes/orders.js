@@ -4,8 +4,27 @@ import prisma from "../lib/prisma.js";
 import { isAdmin, isAuthenticated } from "../middleware/auth.js";
 import { z } from "zod";
 import { sendOrderConfirmationEmail } from "../lib/email.js";
+import rateLimit from "express-rate-limit";
+import { RedisStore } from "rate-limit-redis";
+import { redisClient } from "../lib/redis.js";
 
 const router = Router();
+
+// Rate limiter for order creation (10 orders per 10 minutes per user)
+const orderLimiter = redisClient
+  ? rateLimit({
+      store: new RedisStore({
+        // @ts-expect-error - Known issue with ioredis types
+        sendCommand: (...args) => redisClient.call(...args),
+      }),
+      windowMs: 10 * 60 * 1000, // 10 minutes
+      max: 10, // 10 requests per window
+      message: "Too many orders created. Please try again in 10 minutes.",
+      standardHeaders: true,
+      legacyHeaders: false,
+      keyGenerator: (req) => req.user?.id || req.ip, // Rate limit by user ID or IP
+    })
+  : (req, res, next) => next(); // No-op if Redis not available
 
 // ----------------------- SCHEMAS ----------------------- //
 
@@ -220,7 +239,7 @@ router.get("/:id", isAuthenticated, async (req, res, next) => {
 });
 
 
-router.post("/", isAuthenticated, async (req, res, next) => {
+router.post("/", isAuthenticated, orderLimiter, async (req, res, next) => {
   try {
     const parsed = createOrderSchema.extend({
       discountCode: z.string().nullable().optional(),

@@ -19,7 +19,7 @@ function getCorsOrigins() {
   if (isProductionMode()) {
     // Production: Only allow exact domains (no wildcards!)
     // Example: ["https://urbanic-pitara.com", "https://admin.urbanic-pitara.com"]
-    const origins = [corsOrigin];
+    const origins = [corsOrigin, "https://urbanic-pitara-frontend-main.vercel.app"];
     
     // Also allow FRONTEND_URL if set and different from CORS_ORIGIN
     const frontendUrl = process.env.FRONTEND_URL;

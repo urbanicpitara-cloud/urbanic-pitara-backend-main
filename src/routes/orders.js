@@ -3,6 +3,7 @@ import { DiscountType, OrderStatus, Prisma } from "@prisma/client";
 import prisma from "../lib/prisma.js";
 import { isAdmin, isAuthenticated } from "../middleware/auth.js";
 import { z } from "zod";
+import { sendOrderConfirmationEmail } from "../lib/email.js";
 
 const router = Router();
 
@@ -435,6 +436,9 @@ router.post("/", isAuthenticated, async (req, res, next) => {
 
       return { ...newOrder, payment: newPayment };
     });
+
+    // ----------------- SEND EMAIL -----------------
+    sendOrderConfirmationEmail(orderWithPayment).catch(err => console.error("Failed to send order confirmation email:", err));
 
     // ----------------- RESPONSE -----------------
     res.status(201).json({

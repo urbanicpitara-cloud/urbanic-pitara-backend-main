@@ -2,6 +2,7 @@ import { Router } from "express";
 import prisma from "../lib/prisma.js";
 import bcrypt from "bcrypt";
 import { isAuthenticated, isAdmin } from "../middleware/auth.js";
+import { sendAdminGeneratedPasswordEmail } from "../lib/email.js";
 
 const router = Router();
 
@@ -152,18 +153,19 @@ router.put("/:id/reset-password", isAuthenticated, isAdmin, async (req, res, nex
     const newPassword = Math.random().toString(36).slice(-8); // Random 8-char password
     const passwordHash = await bcrypt.hash(newPassword, 10);
 
-    await prisma.user.update({
+    const user = await prisma.user.update({
       where: { id },
       data: { passwordHash },
     });
 
-    // TODO: Send new password via email
+    // Send new password via email
+    await sendAdminGeneratedPasswordEmail(user, newPassword);
+
     res.json({ success: true, message: "Password reset successfully", newPassword });
   } catch (err) {
     next(err);
   }
 });
-
 /**
  * 🗑 Delete User (Admin Only)
  */

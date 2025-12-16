@@ -169,9 +169,24 @@ export async function sendAdminGeneratedPasswordEmail(user, newPassword) {
   return sendEmail({ to: user.email, subject, text, html });
 }
 
+/**
+ * 5. Custom Email (Admin)
+ */
+export async function sendCustomEmail({ to, subject, html, text }) {
+  const emailHtml = `
+    <div style="font-family: Arial, sans-serif; color: #333;">
+      ${html}
+      <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+      <p style="font-size: 12px; color: #888;">This email was sent by the Urbanic Pitara team.</p>
+    </div>
+  `;
+  return sendEmail({ to, subject, text, html: emailHtml });
+}
+
 export default {
   sendWelcomeEmail,
   sendPasswordResetEmail,
   sendOrderConfirmationEmail,
   sendAdminGeneratedPasswordEmail,
+  sendCustomEmail,
 };

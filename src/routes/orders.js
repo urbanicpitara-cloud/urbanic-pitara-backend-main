@@ -737,6 +737,33 @@ router.put("/admin/:id", isAuthenticated, isAdmin, async (req, res, next) => {
 
 
 // Update order status (admin)
+router.post("/admin/:id/invoice", isAuthenticated, async (req, res, next) => {
+  try {
+    if (!req.user.isAdmin) return res.status(403).json({ error: "Not authorized" });
+    const { id } = req.params;
+
+    const order = await prisma.order.findUnique({
+      where: { id },
+      include: {
+        user: { select: { id: true, email: true, firstName: true, lastName: true } },
+        items: { include: { product: true, variant: true, customProduct: true } },
+        shippingAddress: true,
+      },
+    });
+
+    if (!order) return res.status(404).json({ error: "Order not found" });
+
+    // Send invoice
+    await sendOrderConfirmationEmail(order);
+
+    res.json({ success: true, message: "Invoice sent successfully" });
+  } catch (error) {
+    next(error);
+  }
+});
+
+
+// Update order status (admin)
 router.put("/admin/:id/status", isAuthenticated, async (req, res, next) => {
   try {
     if (!req.user.isAdmin) return res.status(403).json({ error: "Not authorized" });

@@ -2,7 +2,7 @@ import { Router } from "express";
 import prisma from "../lib/prisma.js";
 import bcrypt from "bcrypt";
 import { isAuthenticated, isAdmin } from "../middleware/auth.js";
-import { sendAdminGeneratedPasswordEmail } from "../lib/email.js";
+import { sendAdminGeneratedPasswordEmail, sendCustomEmail } from "../lib/email.js";
 
 const router = Router();
 
@@ -286,5 +286,63 @@ router.delete("/", isAuthenticated, isAdmin, async (req, res, next) => {
   }
 });
 
+
+
+/**
+ * 📧 Send Custom Email (Bulk/Single)
+ */
+router.post("/admin/email", isAuthenticated, isAdmin, async (req, res, next) => {
+  try {
+    const { userIds, subject, message, isHtml, selectAll } = req.body;
+
+    if (!subject || !message) {
+      return res.status(400).json({ success: false, message: "Subject and message are required" });
+    }
+
+    let targetUserIds = [];
+
+    if (selectAll) {
+      const allUsers = await prisma.user.findMany({ select: { id: true } });
+      targetUserIds = allUsers.map((u) => u.id);
+    } else if (Array.isArray(userIds) && userIds.length > 0) {
+      targetUserIds = userIds;
+    } else {
+      return res.status(400).json({ success: false, message: "No users selected" });
+    }
+
+    // Fetch emails for target users
+    const users = await prisma.user.findMany({
+      where: { id: { in: targetUserIds } },
+      select: { email: true, firstName: true },
+    });
+
+    if (users.length === 0) {
+      return res.status(404).json({ success: false, message: "No valid users found to email" });
+    }
+
+    // Send emails in background (fire and forget) to prevent timeout
+    // In a real production app, use a queue (Bull/Redis). Here we use Promise.allSettled.
+    Promise.allSettled(
+      users.map((user) =>
+        sendCustomEmail({
+          to: user.email,
+          subject,
+          html: isHtml ? message : `<p>${message.replace(/\n/g, "<br>")}</p>`,
+          text: isHtml ? message.replace(/<[^>]*>/g, "") : message,
+        })
+      )
+    ).then((results) => {
+      const sent = results.filter((r) => r.status === "fulfilled" && r.value).length;
+      console.log(`📧 Bulk email: Sent ${sent}/${users.length} emails`);
+    });
+
+    res.json({
+      success: true,
+      message: `Email queuing for ${users.length} users.`,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
 export default router;

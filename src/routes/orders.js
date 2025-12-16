@@ -370,6 +370,7 @@ router.post("/", isAuthenticated, async (req, res, next) => {
           shippingAddress: true,
           billingAddress: true,
           appliedDiscount: true,
+          user: true,
         },
       });
 

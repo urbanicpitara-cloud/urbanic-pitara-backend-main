@@ -1,58 +1,46 @@
-import nodemailer from "nodemailer";
+import { Resend } from 'resend';
 import { getEnv, isProductionMode } from "../config/env.js";
 
 /**
- * Configure Nodemailer Transport
- * Looks for SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS
+ * Configure Resend Client
+ * Requires RESEND_API_KEY in environment variables
  */
-const createTransporter = () => {
-  const host = process.env.SMTP_HOST;
-  const port = process.env.SMTP_PORT ? parseInt(process.env.SMTP_PORT, 10) : 587;
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS?.replace(/\s+/g, "");
+const resendApiKey = process.env.RESEND_API_KEY;
 
-  // Check if configuration exists
-  if (!host || !user || !pass) {
-    return null;
-  }
+if (!resendApiKey) {
+  console.warn('⚠️ RESEND_API_KEY not found. Emails will be mocked.');
+}
 
-  return nodemailer.createTransport({
-    host,
-    port,
-    secure: port === 465, // true for 465, false for other ports
-    auth: { user, pass },
-    tls: {
-      ciphers: 'SSLv3', // Help with some older protocols
-    },
-    ignoreTLS: false,
-    requireTLS: true,
-    connectionTimeout: 10000, // 10 seconds
-    greetingTimeout: 5000, // 5 seconds
-    socketTimeout: 10000, // 10 seconds
-  });
-};
+const resend = resendApiKey ? new Resend(resendApiKey) : null;
 
-const transporter = createTransporter();
-const FROM_EMAIL = process.env.FROM_EMAIL || '"Urbanic Pitara" <no-reply@urbanic-pitara.com>';
+// Use verified domain in production, or onboarding address in dev/testing
+// If verifying domain, update FROM_EMAIL in .env to 'Urbanic Pitara <support@urbanicpitara.com>'
+const FROM_EMAIL = process.env.FROM_EMAIL || 'onboarding@resend.dev';
 
 /**
- * Helper: Send Email with Fallback
+ * Helper: Send Email via Resend
  */
 async function sendEmail({ to, subject, text, html }) {
   try {
-    if (transporter) {
-      const info = await transporter.sendMail({
+    if (resend) {
+      const { data, error } = await resend.emails.send({
         from: FROM_EMAIL,
-        to,
+        to, 
         subject,
         text,
         html,
       });
-      console.log(`📧 Email sent to ${to}: ${info.messageId}`);
+
+      if (error) {
+        console.error('❌ Resend API Error:', error);
+        return false;
+      }
+
+      console.log(`📧 Email sent to ${to}: ID ${data.id}`);
       return true;
     } else {
       // Fallback for Dev/Missing Config
-      console.warn("⚠️ SMTP not configured. Email mocked:");
+      console.warn("⚠️ Resend not configured. Email mocked:");
       console.log(`To: ${to}\nSubject: ${subject}\nLink/Content: ${text}`);
       return false;
     }

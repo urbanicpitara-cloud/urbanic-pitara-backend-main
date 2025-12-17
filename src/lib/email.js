@@ -23,9 +23,18 @@ const FROM_EMAIL = process.env.FROM_EMAIL || 'onboarding@resend.dev';
 async function sendEmail({ to, subject, text, html }) {
   try {
     if (resend) {
+      const isProd = isProductionMode();
+      const finalTo = isProd ? to : 'urbanicpitara@gmail.com';
+      
+      console.log(`📧 Preparing to send email...`);
+      console.log(`   Mode: ${isProd ? 'Production' : 'Development/Test'}`);
+      console.log(`   From: ${FROM_EMAIL}`);
+      console.log(`   To (Original): ${to}`);
+      console.log(`   To (Actual): ${finalTo} ${!isProd ? '(Redirected for safety)' : ''}`);
+
       const { data, error } = await resend.emails.send({
         from: FROM_EMAIL,
-        to, 
+        to: finalTo, 
         subject,
         text,
         html,

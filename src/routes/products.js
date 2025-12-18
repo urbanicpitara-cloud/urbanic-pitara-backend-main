@@ -382,123 +382,125 @@ router.post("/", isAuthenticated, isAdmin, async (req, res, next) => {
 
 
 
+
+
+
+
+
 /**
- * ✏️ Bulk update products (Admin only)
- * Body: { ids: string[], updates: Record<string, any> }
+ * 🔄 Bulk Update Products
  */
 router.put("/bulk-update", isAuthenticated, isAdmin, async (req, res, next) => {
   try {
     const { ids, updates } = req.body;
 
-    // 🧩 Validate input
-    if (!ids?.length)
-      return res.status(400).json({ error: "No product IDs provided." });
-
-    if (!updates || typeof updates !== "object")
-      return res.status(400).json({ error: "No update data provided." });
-
-    // 🧩 Define relational fields AND fields that don't exist on Product model
-    const relational = ["tags", "variants", "images", "options", "priceAmount", "compareAmount"];
-
-    // 🧩 Extract non-relational update data
-    const productUpdateData = Object.fromEntries(
-      Object.entries(updates).filter(([key]) => !relational.includes(key))
-    );
-
-    // If priceAmount is provided, we need to update min/max fields on the Product model
-    if (updates.priceAmount) {
-      productUpdateData.minPriceAmount = updates.priceAmount;
-      productUpdateData.maxPriceAmount = updates.priceAmount;
-      productUpdateData.minPriceCurrency = "INR"; // Default currency
-      productUpdateData.maxPriceCurrency = "INR";
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: "Product IDs are required" });
     }
 
-    if (updates.compareAmount) {
-      productUpdateData.compareMinAmount = updates.compareAmount;
-      productUpdateData.compareMaxAmount = updates.compareAmount;
-      productUpdateData.compareMinCurrency = "INR";
-      productUpdateData.compareMaxCurrency = "INR";
+    if (!updates || typeof updates !== 'object') {
+      return res.status(400).json({ error: "Updates object is required" });
     }
 
-    // ✅ Update scalar fields for all selected products
-    if (Object.keys(productUpdateData).length > 0) {
-      await prisma.product.updateMany({
-        where: { id: { in: ids } },
-        data: productUpdateData,
-      });
-    }
+    const results = [];
 
-    // ✅ Handle tags (merge new tags, don’t remove existing)
-    if (updates.tags && Array.isArray(updates.tags) && updates.tags.length > 0) {
-      try {
-        // 1️⃣ Ensure all tags exist or create missing ones
-        const tags = [];
-        for (const tagHandle of updates.tags) {
-          let tag = await prisma.tag.findUnique({ where: { handle: tagHandle } });
-          if (!tag) {
-            tag = await prisma.tag.create({
-              data: {
-                handle: tagHandle,
-                name: tagHandle
-                  .replace(/-/g, " ")
-                  .replace(/\b\w/g, (l) => l.toUpperCase()),
-              },
+    for (const id of ids) {
+      const productUpdates = {};
+
+      // Handle simple fields
+      if (updates.title) productUpdates.title = updates.title;
+      if (updates.published !== undefined) productUpdates.published = updates.published;
+      if (updates.priceAmount) productUpdates.minPriceAmount = updates.priceAmount;
+      if (updates.compareAmount) productUpdates.compareMinAmount = updates.compareAmount;
+
+      // Handle color and colorValue (metafields)
+      if (updates.color || updates.colorValue) {
+        const product = await prisma.product.findUnique({ where: { id } });
+        const newMetafields = { ...(product?.metafields || {}) };
+        
+        if (updates.color) newMetafields.color = updates.color;
+        if (updates.colorValue) newMetafields.colorValue = updates.colorValue;
+
+        productUpdates.metafields = newMetafields;
+      }
+
+      // Handle tags
+      if (updates.tags && Array.isArray(updates.tags)) {
+        // Delete existing tags
+        await prisma.productTag.deleteMany({ where: { productId: id } });
+        
+        // Create new tags
+        const tagConnections = await Promise.all(
+          updates.tags.map(async (tagHandle) => {
+            const tag = await prisma.tag.upsert({
+              where: { handle: tagHandle },
+              update: {},
+              create: { handle: tagHandle, name: tagHandle }
             });
-          }
-          tags.push(tag);
-        }
+            return { tagId: tag.id };
+          })
+        );
 
-        // 2️⃣ Attach tags to each selected product in BULK
-        // Use createMany with skipDuplicates for massive performance boost (1 query vs N*M)
-        if (ids.length > 0 && tags.length > 0) {
-          const productTagsToCreate = [];
-          
-          for (const id of ids) {
-            for (const tag of tags) {
-              productTagsToCreate.push({
-                productId: id,
-                tagId: tag.id
-              });
+        productUpdates.tags = {
+          create: tagConnections
+        };
+      }
+
+      // Update product
+      if (Object.keys(productUpdates).length > 0) {
+        await prisma.product.update({
+          where: { id },
+          data: productUpdates
+        });
+      }
+
+      // Handle stock adjustment (affects all variants)
+      if (updates.stockAdjustment !== undefined && updates.stockAdjustment !== 0) {
+        const adjustment = parseInt(updates.stockAdjustment);
+        
+        await prisma.productVariant.updateMany({
+          where: { productId: id },
+          data: {
+            inventoryQuantity: {
+              increment: adjustment
             }
           }
-
-          if (productTagsToCreate.length > 0) {
-            await prisma.productTag.createMany({
-              data: productTagsToCreate,
-              skipDuplicates: true, // Only creates if relation doesn't exist
-            });
-          }
-        }
-      } catch (err) {
-        console.error("Warning: Tag update failed partially", err);
-        // Don't fail the whole request if tags fail
+        });
       }
+
+      // Handle price updates for variants
+      if (updates.priceAmount) {
+        await prisma.productVariant.updateMany({
+          where: { productId: id },
+          data: { priceAmount: updates.priceAmount }
+        });
+      }
+
+      if (updates.compareAmount) {
+        await prisma.productVariant.updateMany({
+          where: { productId: id },
+          data: { compareAmount: updates.compareAmount }
+        });
+      }
+
+      results.push({ id, success: true });
     }
 
-    // ✅ Handle bulk price update for product variants
-    if (updates.priceAmount || updates.compareAmount) {
-      await prisma.productVariant.updateMany({
-        where: { productId: { in: ids } },
-        data: {
-          ...(updates.priceAmount && { priceAmount: updates.priceAmount }),
-          ...(updates.compareAmount && { compareAmount: updates.compareAmount }),
-        },
-      });
+    // Invalidate cache
+    if (USE_CACHE) {
+      await cache.delPattern('products:*');
     }
 
-    // ✅ Send response
     res.json({
       success: true,
-      message: `✅ Updated ${ids.length} product${ids.length > 1 ? "s" : ""} successfully.`,
+      message: `Successfully updated ${results.length} product(s)`,
+      results
     });
   } catch (err) {
-    console.error("❌ Bulk update failed:", err);
+    console.error("Bulk update failed:", err);
     next(err);
   }
 });
-
-
-
 
 /**
  * ✏️ Update product (Admin only)
@@ -870,6 +872,46 @@ router.get("/:handle/related", async (req, res, next) => {
   }
 });
 
+
+
+/**
+ * 🗑️ Bulk Delete Products
+ */
+router.delete("/bulk-delete", isAuthenticated, isAdmin, async (req, res, next) => {
+  try {
+    const { ids } = req.body;
+
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: "Product IDs are required" });
+    }
+
+    // Delete all related data and products
+    for (const id of ids) {
+      await prisma.$transaction(async (tx) => {
+        await tx.productImage.deleteMany({ where: { productId: id } });
+        await tx.productOption.deleteMany({ where: { productId: id } });
+        await tx.productVariant.deleteMany({ where: { productId: id } });
+        await tx.productTag.deleteMany({ where: { productId: id } });
+        await tx.cartLine.deleteMany({ where: { productId: id } });
+        await tx.orderItem.deleteMany({ where: { productId: id } });
+        await tx.product.delete({ where: { id } });
+      });
+    }
+
+    // Invalidate cache
+    if (USE_CACHE) {
+      await cache.delPattern('products:*');
+    }
+
+    res.json({
+      success: true,
+      message: `Successfully deleted ${ids.length} product(s)`
+    });
+  } catch (err) {
+    console.error("Bulk delete failed:", err);
+    next(err);
+  }
+});
 
 
 

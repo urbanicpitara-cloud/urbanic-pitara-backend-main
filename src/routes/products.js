@@ -5,6 +5,9 @@ import { stripHtml } from "string-strip-html";
 import { cache } from "../lib/redis.js";
 const router = Router();
 
+// Only use cache in production
+const USE_CACHE = process.env.NODE_ENV === 'production';
+
 /**
  * 🛍️ Get all products (with pagination, filtering, sorting)
  */
@@ -28,11 +31,13 @@ router.get("/", async (req, res, next) => {
     // Create cache key from query params
     const cacheKey = `products:${JSON.stringify(req.query)}`;
     
-    // Try to get from cache first
-    const cached = await cache.get(cacheKey);
-    if (cached) {
-      res.set('X-Cache', 'HIT');
-      return res.json(cached);
+    // Try to get from cache first (only in production)
+    if (USE_CACHE) {
+      const cached = await cache.get(cacheKey);
+      if (cached) {
+        res.set('X-Cache', 'HIT');
+        return res.json(cached);
+      }
     }
 
     const fetchAll = all === "true" || limit === "all";
@@ -123,10 +128,12 @@ router.get("/", async (req, res, next) => {
           },
     };
 
-    // Cache for 5 minutes (300 seconds)
-    await cache.set(cacheKey, response, 300);
-    res.set('X-Cache', 'MISS');
-    res.set('Cache-Control', 'public, max-age=300, s-maxage=600');
+    // Cache for 5 minutes (300 seconds) - only in production
+    if (USE_CACHE) {
+      await cache.set(cacheKey, response, 300);
+      res.set('X-Cache', 'MISS');
+      res.set('Cache-Control', 'public, max-age=300, s-maxage=600');
+    }
     
     res.json(response);
   } catch (err) {
@@ -146,12 +153,14 @@ router.get("/:handle", async (req, res, next) => {
   try {
     const { handle } = req.params;
 
-    // Try cache first
+    // Try cache first (only in production)
     const cacheKey = `product:${handle}`;
-    const cached = await cache.get(cacheKey);
-    if (cached) {
-      res.set('X-Cache', 'HIT');
-      return res.json(cached);
+    if (USE_CACHE) {
+      const cached = await cache.get(cacheKey);
+      if (cached) {
+        res.set('X-Cache', 'HIT');
+        return res.json(cached);
+      }
     }
 
     const product = await prisma.product.findUnique({
@@ -172,10 +181,12 @@ router.get("/:handle", async (req, res, next) => {
       tags: product.tags.map((t) => t.tag),
     };
 
-    // Cache for 10 minutes
-    await cache.set(cacheKey, response, 600);
-    res.set('X-Cache', 'MISS');
-    res.set('Cache-Control', 'public, max-age=600, s-maxage=1200');
+    // Cache for 10 minutes (only in production)
+    if (USE_CACHE) {
+      await cache.set(cacheKey, response, 600);
+      res.set('X-Cache', 'MISS');
+      res.set('Cache-Control', 'public, max-age=600, s-maxage=1200');
+    }
     
     res.json(response);
   } catch (err) {

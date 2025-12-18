@@ -355,6 +355,10 @@ router.post("/", isAuthenticated, isAdmin, async (req, res, next) => {
       },
     });
 
+    // Invalidate cache
+    await cache.del(`product:${fullProduct.handle}`);
+    await cache.delPattern('products:*');
+
     res.status(201).json({
       ...fullProduct,
       tags: fullProduct.tags.map((t) => t.tag),

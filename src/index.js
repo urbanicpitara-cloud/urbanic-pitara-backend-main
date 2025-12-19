@@ -33,6 +33,8 @@ import paymentRouter from "./routes/payment.js";
 import customizerRouter from "./routes/customizer.js";
 import adminCustomizerRouter from "./routes/admin-customizer.js";
 import downloadAssetsRouter from "./routes/download-assets.js";
+import variantGroupsRouter from "./routes/variantGroups.js"; // 🆕 Variant Groups
+
 import "./workers/order-processor.js"; // Start order processing worker
 console.log("\n🔍 Validating environment configuration...\n");
 validateEnv();
@@ -101,6 +103,8 @@ app.use("/cart", cartRouter);
 app.use("/customizer", customizerRouter);
 app.use("/admin/customizer", adminCustomizerRouter);
 app.use("/download-assets", downloadAssetsRouter);
+app.use("/variant-groups", variantGroupsRouter); // 🆕 Variant Groups
+
 
 // ✅ Protected Routes (require authentication)
 app.use("/addresses", addressesRouter);

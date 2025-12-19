@@ -171,6 +171,19 @@ router.get("/:handle", async (req, res, next) => {
         variants: true,
         tags: { include: { tag: true } },
         options: { include: { values: true } },
+        variantGroup: {
+          include: {
+            products: {
+              select: {
+                id: true,
+                handle: true,
+                title: true,
+                metafields: true,
+                images: { take: 1, select: { url: true } }
+              }
+            }
+          }
+        },
       },
     });
 
@@ -216,6 +229,7 @@ router.post("/", isAuthenticated, isAdmin, async (req, res, next) => {
       metaTitle,
       metaDescription,
       metaKeywords,
+      variantGroupId, // 🆕
     } = req.body;
 
     if (!title)
@@ -291,6 +305,8 @@ router.post("/", isAuthenticated, isAdmin, async (req, res, next) => {
           compareMinCurrency: compareCurrency,
           compareMaxAmount,
           compareMaxCurrency: compareCurrency,
+          variantGroupId, // 🆕
+          updatedAt: new Date(),
         },
       });
 
@@ -525,6 +541,7 @@ router.put("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
       metaTitle,
       metaDescription,
       metaKeywords,
+      variantGroupId, // 🆕
     } = req.body;
 
     const existing = await prisma.product.findUnique({
@@ -600,6 +617,7 @@ router.put("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
           compareMinCurrency: compareCurrency,
           compareMaxAmount,
           compareMaxCurrency: compareCurrency,
+          variantGroupId, // 🆕
           updatedAt: new Date(),
         },
       });

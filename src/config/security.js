@@ -156,6 +156,8 @@ export function createGlobalRateLimiter() {
     standardHeaders: true,
     legacyHeaders: false,
     skip: (req) => {
+      // Skip for admin users
+      if (req.user?.isAdmin) return true;
       // Don't limit health checks
       if (req.path === "/health") return true;
       return false;
@@ -198,6 +200,11 @@ export function createPaymentRateLimiter() {
     },
     standardHeaders: true,
     legacyHeaders: false,
+    skip: (req) => {
+      // Skip for admin users
+      if (req.user?.isAdmin) return true;
+      return false;
+    },
     keyGenerator: (req) => {
       // Rate limit by user ID if authenticated, otherwise by IP
       return req.user?.id || req.ip;

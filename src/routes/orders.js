@@ -11,20 +11,29 @@ import { redisClient } from "../lib/redis.js";
 const router = Router();
 
 // Rate limiter for order creation (10 orders per 10 minutes per user)
-const orderLimiter = redisClient
-  ? rateLimit({
-      store: new RedisStore({
-        // @ts-expect-error - Known issue with ioredis types
-        sendCommand: (...args) => redisClient.call(...args),
-      }),
-      windowMs: 10 * 60 * 1000, // 10 minutes
-      max: 10, // 10 requests per window
-      message: "Too many orders created. Please try again in 10 minutes.",
-      standardHeaders: true,
-      legacyHeaders: false,
-      keyGenerator: (req) => req.user?.id || req.ip, // Rate limit by user ID or IP
-    })
-  : (req, res, next) => next(); // No-op if Redis not available
+// Rate limiter for order creation (10 orders per 10 minutes per user)
+let orderLimiter;
+try {
+  orderLimiter = redisClient
+    ? rateLimit({
+        store: new RedisStore({
+          // @ts-expect-error - Known issue with ioredis types
+          sendCommand: (...args) => redisClient.call(...args),
+        }),
+        windowMs: 10 * 60 * 1000, // 10 minutes
+        max: 10, // 10 requests per window
+        message: "Too many orders created. Please try again in 10 minutes.",
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: (req) => req.user?.id || req.ip, // Rate limit by user ID or IP
+        // Fail open if Redis is down/limited
+        skipFailedRequests: true,
+      })
+    : (req, res, next) => next(); 
+} catch (error) {
+  console.error("Rate limiter init failed, falling back to no-op:", error);
+  orderLimiter = (req, res, next) => next();
+}
 
 // ----------------------- SCHEMAS ----------------------- //
 

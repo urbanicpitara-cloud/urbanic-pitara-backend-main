@@ -1,13 +1,19 @@
 import Redis from 'ioredis';
 import { Queue, Worker } from 'bullmq';
 
-// Initialize Redis connection using Upstash REST API
+// Check if Redis should be enabled (defaults to false for safety)
+const REDIS_ENABLED = process.env.REDIS_ENABLED === 'true';
+
+if (!REDIS_ENABLED) {
+  console.warn('⚠️  Redis is DISABLED (set REDIS_ENABLED=true to enable)');
+}
+
 // Initialize Redis connection using Upstash REST API
 const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
 const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
 
-if (!redisUrl || !redisToken) {
-  console.warn('⚠️ Redis credentials not found. Caching and queue disabled.');
+if (REDIS_ENABLED && (!redisUrl || !redisToken)) {
+  console.warn('⚠️  Redis credentials not found. Caching and queue disabled.');
 }
 
 // Fix invalid URL protocol from Upstash (https -> rediss)
@@ -25,7 +31,7 @@ const fixUrl = (url) => {
 const connectionUrl = fixUrl(redisUrl);
 
 // Create Redis client for Upstash
-const redisClient = connectionUrl && redisToken
+const redisClient = REDIS_ENABLED && connectionUrl && redisToken
   ? new Redis(connectionUrl, {
       tls: {
         rejectUnauthorized: false

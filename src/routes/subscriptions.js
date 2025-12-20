@@ -59,14 +59,20 @@ router.get("/", isAuthenticated, isAdmin, async (req, res, next) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
+    const verified = req.query.verified; // 'true', 'false', or undefined
+
+    const where = {};
+    if (verified === 'true') where.verified = true;
+    if (verified === 'false') where.verified = false;
 
     const [subscribers, total] = await Promise.all([
       prisma.subscriber.findMany({
+        where,
         skip,
         take: limit,
         orderBy: { createdAt: "desc" }
       }),
-      prisma.subscriber.count()
+      prisma.subscriber.count({ where })
     ]);
 
     res.json({
@@ -90,6 +96,24 @@ router.delete("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
       where: { id: req.params.id }
     });
     res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Bulk delete subscribers
+router.delete("/", isAuthenticated, isAdmin, async (req, res, next) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: "No IDs provided" });
+    }
+
+    await prisma.subscriber.deleteMany({
+      where: { id: { in: ids } }
+    });
+
+    res.json({ message: "Subscribers deleted successfully" });
   } catch (err) {
     next(err);
   }
@@ -137,6 +161,68 @@ router.get("/export", isAuthenticated, isAdmin, async (req, res, next) => {
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", "attachment; filename=subscribers.csv");
     res.send(csv);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Send email to subscribers (admin only)
+router.post("/admin/email", isAuthenticated, isAdmin, async (req, res, next) => {
+  try {
+    const { ids, subject, message, isHtml, selectAll, filterVerified } = req.body;
+
+    if (!subject || !message) {
+      return res.status(400).json({ error: "Subject and message are required" });
+    }
+
+    let targetEmails = [];
+
+    if (selectAll) {
+      const where = {};
+      if (filterVerified === 'true') where.verified = true;
+      if (filterVerified === 'false') where.verified = false;
+
+      const subscribers = await prisma.subscriber.findMany({
+        where,
+        select: { email: true }
+      });
+      targetEmails = subscribers.map(s => s.email);
+    } else if (Array.isArray(ids) && ids.length > 0) {
+      const subscribers = await prisma.subscriber.findMany({
+        where: { id: { in: ids } },
+        select: { email: true }
+      });
+      targetEmails = subscribers.map(s => s.email);
+    } else {
+      return res.status(400).json({ error: "No recipients selected" });
+    }
+
+    if (targetEmails.length === 0) {
+      return res.status(404).json({ error: "No subscribers found to email" });
+    }
+
+    // In production, use a queue. For now, we'll try to process safely.
+    // Importing dynamically to avoid circular dependency issues if any, though not strictly needed here.
+    const { sendCustomEmail } = await import("../lib/email.js");
+
+    // Process in chunks or just fire and forget if the list isn't huge.
+    // We'll use Promise.allSettled
+    Promise.allSettled(
+      targetEmails.map(email => 
+        sendCustomEmail({
+          to: email,
+          subject,
+          html: isHtml ? message : `<p>${message.replace(/\n/g, "<br>")}</p>`,
+          text: isHtml ? message.replace(/<[^>]*>/g, "") : message,
+        })
+      )
+    ).then(results => {
+      const successCount = results.filter(r => r.status === 'fulfilled').length;
+      console.log(`Sent ${successCount}/${targetEmails.length} emails to subscribers`);
+    });
+
+    res.json({ message: `Email sending started for ${targetEmails.length} subscribers` });
+
   } catch (err) {
     next(err);
   }

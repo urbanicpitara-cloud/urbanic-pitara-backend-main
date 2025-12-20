@@ -33,20 +33,6 @@ const redisClient = connectionUrl && redisToken
       password: redisToken,
       maxRetriesPerRequest: null, // Required for BullMQ
       family: 4, // Force IPv4
-      retryStrategy: (times) => {
-        // Stop retrying after 3 attempts if it's a limit error or similar
-        // or just delay retries (linear backoff)
-        const delay = Math.min(times * 50, 2000);
-        return delay;
-      },
-      reconnectOnError: (err) => {
-        const targetError = "READONLY";
-        if (err.message.includes("limit exceeded") || err.message.includes(targetError)) {
-          // Only reconnect when the error starts with "READONLY" or is a limit error
-          return false; // Do not reconnect automatically for limit errors, let it fail gracefully
-        }
-        return true;
-      }
     })
   : null;
 

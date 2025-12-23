@@ -100,7 +100,7 @@ router.post('/initiate', isAuthenticated, async (req, res) => {
     // Default: PhonePe
     const merchantTransactionId = `${orderId}_${uuidv4().replace(/-/g, '')}`;
     const callbackUrl = req.body.callbackUrl || `${process.env.BACKEND_URL || 'http://localhost:4000'}/payment/callback`;
-    
+
     // Ensure redirectUrl has the transaction ID for the frontend to derive status
     const baseUrl = req.body.redirectUrl || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/payment/status`;
     const redirectUrl = `${baseUrl}?transactionId=${merchantTransactionId}`;
@@ -191,6 +191,8 @@ router.post('/callback', async (req, res) => {
     // Map PhonePe status to our Payment status enum
     const paymentStatusMap = {
       COMPLETED: 'PAID',
+      SUCCESS: 'PAID',
+      PAYMENT_SUCCESS: 'PAID',
       FAILED: 'FAILED',
       PENDING: 'INITIATED',
     };
@@ -432,6 +434,8 @@ router.get('/status/:transactionId', isAuthenticated, async (req, res) => {
     // Map PhonePe status to our Payment status enum
     const paymentStatusMap = {
       COMPLETED: 'PAID',
+      SUCCESS: 'PAID',
+      PAYMENT_SUCCESS: 'PAID',
       FAILED: 'FAILED',
       PENDING: 'INITIATED',
     };
@@ -520,10 +524,10 @@ router.post('/:paymentId/refund', isAuthenticated, isAdmin, async (req, res, nex
     // Check refund amount doesn't exceed payment amount
     const paymentAmount = Number(payment.amount);
     const refundAmount = Number(amount);
-    
+
     if (refundAmount > paymentAmount) {
-      return res.status(400).json({ 
-        error: `Refund amount (${refundAmount}) cannot exceed payment amount (${paymentAmount})` 
+      return res.status(400).json({
+        error: `Refund amount (${refundAmount}) cannot exceed payment amount (${paymentAmount})`
       });
     }
 
@@ -533,10 +537,10 @@ router.post('/:paymentId/refund', isAuthenticated, isAdmin, async (req, res, nex
 
     // Determine provider from provider field or payment method
     const provider = payment.provider?.toUpperCase() || payment.method?.toUpperCase();
-    
+
     if (!provider) {
-      return res.status(400).json({ 
-        error: 'Cannot determine payment provider. Payment may be too old or invalid.' 
+      return res.status(400).json({
+        error: 'Cannot determine payment provider. Payment may be too old or invalid.'
       });
     }
 
@@ -562,8 +566,8 @@ router.post('/:paymentId/refund', isAuthenticated, isAdmin, async (req, res, nex
         return res.status(400).json({ error: 'Cannot refund COD payments through system - process cash refund manually' });
 
       default:
-        return res.status(400).json({ 
-          error: `Refunds not supported for payment method: ${provider}. Please process refund manually.` 
+        return res.status(400).json({
+          error: `Refunds not supported for payment method: ${provider}. Please process refund manually.`
         });
     }
 

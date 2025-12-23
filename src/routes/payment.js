@@ -439,6 +439,8 @@ router.get('/status/:transactionId', isAuthenticated, async (req, res) => {
     const response = await checkPhonePeStatus(transactionId);
     const phonepeStatus = response.data.state;
 
+    console.log(`[Status Check] Transaction: ${transactionId}, PhonePe Status: ${phonepeStatus}`);
+
     // Map PhonePe status to our Payment status enum
     const paymentStatusMap = {
       COMPLETED: 'PAID',
@@ -448,6 +450,8 @@ router.get('/status/:transactionId', isAuthenticated, async (req, res) => {
       PENDING: 'INITIATED',
     };
     const mappedPaymentStatus = paymentStatusMap[phonepeStatus] || 'INITIATED';
+
+    console.log(`[Status Check] Mapped Status: ${mappedPaymentStatus}`);
 
     // Update transaction if status has changed
     if (phonepeStatus !== transaction.status) {

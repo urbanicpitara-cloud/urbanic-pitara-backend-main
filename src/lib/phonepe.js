@@ -39,21 +39,21 @@ let tokenCache = {
  * Fetch OAuth token manually (for status checks if needed outside SDK)
  */
 export const fetchAuthToken = async () => {
-    // Re-use SDK logic? No, SDK handles it internally for payments. 
-    // We keep this for our manual status check if we don't use SDK for status.
-    // ... (Keep existing implementation simplified or rely on SDK?)
-    // Actually, let's keep it as is, it works for status checks.
+  // Re-use SDK logic? No, SDK handles it internally for payments. 
+  // We keep this for our manual status check if we don't use SDK for status.
+  // ... (Keep existing implementation simplified or rely on SDK?)
+  // Actually, let's keep it as is, it works for status checks.
   const now = Math.floor(Date.now() / 1000);
   if (tokenCache.accessToken && tokenCache.expiresAt - 60 > now) {
     return tokenCache;
   }
   // If we are using SDK for initiation, we might not need this for initiation, 
   // but status check implementation below uses it.
-  
+
   // Reuse existing logic
   const tokenUrl = (PHONEPE_ENV === 'PROD' || PHONEPE_ENV === 'production')
-      ? 'https://api.phonepe.com/apis/identity-manager/v1/oauth/token'
-      : 'https://api-preprod.phonepe.com/apis/pg-sandbox/v1/oauth/token';
+    ? 'https://api.phonepe.com/apis/identity-manager/v1/oauth/token'
+    : 'https://api-preprod.phonepe.com/apis/pg-sandbox/v1/oauth/token';
 
   const body = new URLSearchParams();
   body.append('client_id', PHONEPE_CLIENT_ID);
@@ -100,7 +100,7 @@ export const initiatePayment = async ({
     */
 
     const client = getClient();
-    
+
     // SDK expects amount in PAISA (Long)
     // Input `amount` is in Rupees from our payment service? 
     // Let's check: src/routes/payment.js calls with `amount` (which is order.totalAmount).
@@ -115,23 +115,23 @@ export const initiatePayment = async ({
     // Looking at `generatePayload` in previous file: `amount: amount * 100`. 
     // This implies the input `amount` to `initiatePayment` was in RUPEES.
     // So for SDK: `amount: amount * 100`.
-    
+
     const amountInPaisa = Math.round(amount * 100);
 
     const requestBuilder = StandardCheckoutPayRequest.builder()
-        .merchantOrderId(merchantTransactionId) // Maps to merchantTransactionId
-        .amount(amountInPaisa)
-        .redirectUrl(redirectUrl || `${FRONTEND_URL}/payment/status`);
+      .merchantOrderId(merchantTransactionId) // Maps to merchantTransactionId
+      .amount(amountInPaisa)
+      .redirectUrl(redirectUrl || `${FRONTEND_URL}/payment/status`);
 
     // Optional: Add user ID or mobile if available
     // if (userId) requestBuilder.merchantUserId(userId); 
-    
+
     const request = requestBuilder.build();
 
     console.log('🚀 Initiating PhonePe Payment (SDK):', { merchantTransactionId, amountInPaisa });
-    
+
     const response = await client.pay(request);
-    
+
     // SDK returns a StandardCheckoutPayResponse
     // It has `redirectUrl` property
     const checkoutUrl = response.redirectUrl;
@@ -169,39 +169,41 @@ export const generateXVerify = (base64Payload, apiEndpoint) => {
  */
 export const checkPaymentStatus = async (merchantTransactionId) => {
   try {
-     const useMockPhonePe = process.env.PHONEPE_MOCK === 'true';
-     if (useMockPhonePe) {
-        return {
-            success: true,
-            code: 'PAYMENT_SUCCESS',
-            data: { state: 'COMPLETED', transactionId: merchantTransactionId }
-        };
-     }
+    const useMockPhonePe = process.env.PHONEPE_MOCK === 'true';
+    if (useMockPhonePe) {
+      return {
+        success: true,
+        code: 'PAYMENT_SUCCESS',
+        data: { state: 'COMPLETED', transactionId: merchantTransactionId }
+      };
+    }
 
     const client = getClient();
-    
+
     console.log('🚀 Checking Payment Status (SDK):', merchantTransactionId);
-    
+
     // SDK handles authentication (Client ID/Secret) automatically
     // It should use the correct endpoint and headers.
     // getStatus or getTransactionStatus usually takes the transaction ID.
     // Inspect of SDK showed getTransactionStatus and getOrderStatus.
     // We try getStatus first (common alias) or getTransactionStatus.
-    
-    const response = await client.getTransactionStatus(merchantTransactionId);
+
+    // SDK documentation specifies getOrderStatus
+    // We update to match the verified documentation
+    const response = await client.getOrderStatus(merchantTransactionId);
     console.log('🚀 SDK Status Response:', JSON.stringify(response, null, 2));
-    
+
     // Normalize response: The SDK might return the `data` object directly or the full API response.
     // payment.js expects `response.data.state`.
     if (response && response.state && !response.data) {
-        // SDK returned the inner data object directly
-        return {
-            success: true,
-            code: response.responseCode || 'PAYMENT_SUCCESS',
-            data: response
-        };
+      // SDK returned the inner data object directly
+      return {
+        success: true,
+        code: response.responseCode || 'PAYMENT_SUCCESS',
+        data: response
+      };
     }
-    
+
     return response;
 
   } catch (error) {

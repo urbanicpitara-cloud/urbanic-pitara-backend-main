@@ -35,7 +35,7 @@ import adminCustomizerRouter from "./routes/admin-customizer.js";
 import downloadAssetsRouter from "./routes/download-assets.js";
 import variantGroupsRouter from "./routes/variantGroups.js"; // 🆕 Variant Groups
 
-import "./workers/order-processor.js"; // Start order processing worker
+
 console.log("\n🔍 Validating environment configuration...\n");
 validateEnv();
 
@@ -72,8 +72,8 @@ app.use(express.json({ limit: "1mb" }));
 
 // ✅ Health check endpoint (no rate limit)
 app.get("/health", (_req, res) => {
-  res.json({ 
-    ok: true, 
+  res.json({
+    ok: true,
     environment: process.env.NODE_ENV || "development",
     timestamp: new Date().toISOString()
   });

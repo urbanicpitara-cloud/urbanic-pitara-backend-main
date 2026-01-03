@@ -5,26 +5,19 @@ import { isAdmin, isAuthenticated } from "../middleware/auth.js";
 import { z } from "zod";
 import { sendOrderConfirmationEmail } from "../lib/email.js";
 import rateLimit from "express-rate-limit";
-import { RedisStore } from "rate-limit-redis";
-import { redisClient } from "../lib/redis.js";
+
 
 const router = Router();
 
 // Rate limiter for order creation (10 orders per 10 minutes per user)
-const orderLimiter = redisClient
-  ? rateLimit({
-      store: new RedisStore({
-        // @ts-expect-error - Known issue with ioredis types
-        sendCommand: (...args) => redisClient.call(...args),
-      }),
-      windowMs: 10 * 60 * 1000, // 10 minutes
-      max: 10, // 10 requests per window
-      message: "Too many orders created. Please try again in 10 minutes.",
-      standardHeaders: true,
-      legacyHeaders: false,
-      keyGenerator: (req) => req.user?.id || req.ip, // Rate limit by user ID or IP
-    })
-  : (req, res, next) => next(); // No-op if Redis not available
+const orderLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, // 10 minutes
+  max: 10, // 10 requests per window
+  message: "Too many orders created. Please try again in 10 minutes.",
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id || req.ip, // Rate limit by user ID or IP
+});
 
 // ----------------------- SCHEMAS ----------------------- //
 
@@ -70,7 +63,7 @@ const cancelOrderSchema = z.object({
 });
 
 const updateStatusSchema = z.object({
-  status: z.enum([OrderStatus.PENDING, OrderStatus.DELIVERED,OrderStatus.CANCELED,OrderStatus.PROCESSING,OrderStatus.SHIPPED,OrderStatus.REFUNDED]),
+  status: z.enum([OrderStatus.PENDING, OrderStatus.DELIVERED, OrderStatus.CANCELED, OrderStatus.PROCESSING, OrderStatus.SHIPPED, OrderStatus.REFUNDED]),
   trackingNumber: z.string().optional(),
   trackingCompany: z.string().optional(),
   notes: z.string().optional(),
@@ -306,10 +299,10 @@ router.post("/", isAuthenticated, orderLimiter, async (req, res, next) => {
           const usedCount = await prisma.order.count({
             where: { appliedDiscountId: discount.id },
           });
-          
+
           if (usedCount >= discount.usageLimit) {
-            return res.status(400).json({ 
-              error: "Discount code usage limit has been reached" 
+            return res.status(400).json({
+              error: "Discount code usage limit has been reached"
             });
           }
         }
@@ -393,40 +386,60 @@ router.post("/", isAuthenticated, orderLimiter, async (req, res, next) => {
         },
       });
 
-      // ✅ DECREMENT PRODUCT QUANTITIES FOR EACH ORDER ITEM (skip custom products)
+      // ✅ DECREMENT PRODUCT QUANTITIES (Optimized)
+      // 1. Gather all items needing inventory update
+      const itemsToUpdate = [];
+      const productIdsToResolve = [];
+
       for (const item of cartLinesSource) {
-        // Skip custom products - they don't have inventory to manage
-        if (item.customProductId) {
-          continue;
-        }
-        
+        if (item.customProductId) continue; // Skip custom products
+
         if (item.variantId) {
-          // If variant exists, decrement variant quantity
-          await tx.productVariant.update({
-            where: { id: item.variantId },
-            data: {
-              inventoryQuantity: {
-                decrement: item.quantity,
-              },
-            },
-          });
+          itemsToUpdate.push({ variantId: item.variantId, quantity: item.quantity });
         } else if (item.productId) {
-          // If no variant, find the first variant of the product and decrement
-          const variant = await tx.productVariant.findFirst({
-            where: { productId: item.productId },
-          });
-          if (variant) {
-            await tx.productVariant.update({
-              where: { id: variant.id },
-              data: {
-                inventoryQuantity: {
-                  decrement: item.quantity,
-                },
-              },
-            });
+          // Defer lookup
+          productIdsToResolve.push({ productId: item.productId, quantity: item.quantity });
+        }
+      }
+
+      // 2. Resolve missing variantIds in parallel
+      if (productIdsToResolve.length > 0) {
+        // Fetch valid variants for these products (assuming first variant)
+        const productsWithVariants = await tx.productVariant.findMany({
+          where: {
+            productId: { in: productIdsToResolve.map((p) => p.productId) },
+          },
+          orderBy: { id: 'asc' }, // Ensure deterministic "first" variant
+          distinct: ['productId'], // Postgres specific: get one per product
+          select: { id: true, productId: true },
+        });
+
+        const variantMap = new Map(productsWithVariants.map(v => [v.productId, v.id]));
+
+        for (const p of productIdsToResolve) {
+          const resolvedVariantId = variantMap.get(p.productId);
+          if (resolvedVariantId) {
+            itemsToUpdate.push({ variantId: resolvedVariantId, quantity: p.quantity });
           }
         }
       }
+
+      // 3. Aggregate quantities by variantId to prevent multiple updates to same row
+      const updatesByVariant = new Map();
+      for (const item of itemsToUpdate) {
+        const current = updatesByVariant.get(item.variantId) || 0;
+        updatesByVariant.set(item.variantId, current + item.quantity);
+      }
+
+      // 4. Parrallel Execution of Updates
+      await Promise.all(
+        Array.from(updatesByVariant.entries()).map(([variantId, qty]) =>
+          tx.productVariant.update({
+            where: { id: variantId },
+            data: { inventoryQuantity: { decrement: qty } },
+          })
+        )
+      );
 
       // ----------------- CREATE PAYMENT -----------------
       // Payment status: for COD and external providers (e.g. PHONEPE) mark as INITIATED.
@@ -455,6 +468,9 @@ router.post("/", isAuthenticated, orderLimiter, async (req, res, next) => {
       }
 
       return { ...newOrder, payment: newPayment };
+    }, {
+      maxWait: 5000, // default: 2000
+      timeout: 20000, // default: 5000
     });
 
     // ----------------- SEND EMAIL -----------------
@@ -498,7 +514,7 @@ router.post("/:id/cancel", isAuthenticated, async (req, res, next) => {
     const { id } = req.params;
     const { reason } = parsed;
 
-    const order = await prisma.order.findFirst({ 
+    const order = await prisma.order.findFirst({
       where: { id, userId: req.user.id },
       include: { items: { include: { product: { include: { images: { take: 1 } } }, variant: true, customProduct: true } } },
     });
@@ -514,7 +530,7 @@ router.post("/:id/cancel", isAuthenticated, async (req, res, next) => {
         if (item.customProductId) {
           continue;
         }
-        
+
         if (item.variantId) {
           await tx.productVariant.update({
             where: { id: item.variantId },
@@ -552,6 +568,9 @@ router.post("/:id/cancel", isAuthenticated, async (req, res, next) => {
           billingAddress: true,
         },
       });
+    }, {
+      maxWait: 5000,
+      timeout: 20000,
     });
 
     res.json({
@@ -574,10 +593,10 @@ router.post("/:id/cancel", isAuthenticated, async (req, res, next) => {
 // ----------------------- ADMIN ROUTES ----------------------- //
 
 // Get all orders with pagination OR all at once
-router.get("/admin/all", isAuthenticated,isAdmin, async (req, res, next) => {
+router.get("/admin/all", isAuthenticated, isAdmin, async (req, res, next) => {
   try {
-    
-    const { status, page = 1, limit = 10, all,images=false } = req.query;
+
+    const { status, page = 1, limit = 10, all, images = false } = req.query;
     const where = {};
     if (status) where.status = status;
 
@@ -632,11 +651,11 @@ router.get("/admin/all", isAuthenticated,isAdmin, async (req, res, next) => {
       pagination: fetchAll
         ? null
         : {
-            total: totalCount,
-            page: parseInt(page),
-            limit: parseInt(limit),
-            pages: Math.ceil(totalCount / parseInt(limit)),
-          },
+          total: totalCount,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(totalCount / parseInt(limit)),
+        },
     });
   } catch (error) {
     next(error);

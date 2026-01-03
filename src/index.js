@@ -20,7 +20,7 @@ import {
 import collectionsRouter from "./routes/collections.js";
 import productsRouter from "./routes/products.js";
 import searchRouter from "./routes/search.js";
-import menuRouter from "./routes/menu.js";
+
 import authRouter from "./routes/auth.js";
 import cartRouter from "./routes/cart.js";
 import addressesRouter from "./routes/addresses.js";
@@ -98,7 +98,7 @@ app.use("/admin/payment", strictLimiter, paymentRouter);
 app.use("/collections", collectionsRouter);
 app.use("/products", productsRouter);
 app.use("/search", searchRouter);
-app.use("/menu", menuRouter);
+
 app.use("/cart", cartRouter);
 app.use("/customizer", customizerRouter);
 app.use("/admin/customizer", adminCustomizerRouter);

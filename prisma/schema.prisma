@@ -183,22 +183,6 @@ model ProductVariant {
   @@index([sku])
 }
 
-model Menu {
-  id     String     @id @default(cuid())
-  handle String     @unique
-  items  MenuItem[]
-}
-
-model MenuItem {
-  id       String     @id @default(cuid())
-  title    String
-  url      String
-  menu     Menu       @relation(fields: [menuId], references: [id])
-  menuId   String
-  parent   MenuItem?  @relation("MenuItemToChildren", fields: [parentId], references: [id])
-  parentId String?
-  children MenuItem[] @relation("MenuItemToChildren")
-}
 
 model User {
   id               String          @id @default(cuid())
@@ -474,17 +458,7 @@ model Transaction {
 /**
  * * PAGES / CMS **
  */
-model Page {
-  id              String   @id @default(cuid())
-  slug            String   @unique
-  title           String
-  body            String?
-  metaTitle       String?
-  metaDescription String?
-  published       Boolean  @default(true)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @default(now()) @updatedAt
-}
+
 
 // Subscribers (newsletter signups)
 model Subscriber {

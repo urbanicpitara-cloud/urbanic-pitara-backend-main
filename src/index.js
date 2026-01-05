@@ -125,12 +125,17 @@ app.use((req, res) => {
 });
 
 // ✅ Centralized Error Handler (MUST BE LAST)
-app.use((err, _req, res, _next) => {
+// ✅ Centralized Error Handler (MUST BE LAST)
+app.use((err, req, res, _next) => {
   const status = err.status || 500;
   const message = err.message || "Internal Server Error";
+
+  // 📝 Standardized Response Structure
   const response = {
     error: message,
     timestamp: new Date().toISOString(),
+    path: req.path,
+    method: req.method,
   };
 
   // Include stack trace in development
@@ -138,11 +143,17 @@ app.use((err, _req, res, _next) => {
     response.stack = err.stack;
   }
 
-  console.error("❌ Error:", {
+  // 🔍 Enhanced Server Logging
+  console.error("❌ [API Error]", {
+    timestamp: new Date().toISOString(),
     status,
     message,
-    path: _req.path,
-    method: _req.method,
+    path: req.path,
+    method: req.method,
+    // Safely log body (mask sensitive fields if needed later)
+    body: Object.keys(req.body || {}).length ? req.body : undefined,
+    query: Object.keys(req.query || {}).length ? req.query : undefined,
+    stack: isProductionMode() ? undefined : err.stack?.split('\n')[1]?.trim(), // First line of stack
   });
 
   res.status(status).json(response);

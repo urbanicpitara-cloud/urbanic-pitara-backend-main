@@ -69,7 +69,6 @@ router.post(["/register", "/signup"], async (req, res, next) => {
 
     res.status(201).json({
       user: sanitizeUser(user),
-      token,
     });
   } catch (err) {
     next(err);
@@ -100,7 +99,6 @@ router.post("/login", async (req, res, next) => {
 
     res.json({
       user: sanitizeUser(user),
-      token,
     });
   } catch (err) {
     next(err);

@@ -40,31 +40,31 @@ const formatCart = (cart) => {
         handle: l.product.handle,
         featuredImage: l.product.featuredImageUrl
           ? {
-              url: l.product.featuredImageUrl,
-              altText: l.product.featuredImageAlt,
-            }
+            url: l.product.featuredImageUrl,
+            altText: l.product.featuredImageAlt,
+          }
           : l.product.images[0]
-          ? {
+            ? {
               url: l.product.images[0].url,
               altText: l.product.images[0].altText,
             }
-          : null,
+            : null,
       } : null,
       variant: l.variant
         ? {
-            id: l.variant.id,
-            selectedOptions: l.variant.selectedOptions,
-          }
+          id: l.variant.id,
+          selectedOptions: l.variant.selectedOptions,
+        }
         : null,
       customProduct: l.customProduct
         ? {
-            id: l.customProduct.id,
-            title: l.customProduct.title,
-            color: l.customProduct.color,
-            size: l.customProduct.size,
-            previewUrl: l.customProduct.previewUrl,
-            description: l.customProduct.description,
-          }
+          id: l.customProduct.id,
+          title: l.customProduct.title,
+          color: l.customProduct.color,
+          size: l.customProduct.size,
+          previewUrl: l.customProduct.previewUrl,
+          description: l.customProduct.description,
+        }
         : null,
       price: {
         amount: l.priceAmount,
@@ -209,11 +209,11 @@ router.post("/lines", async (req, res, next) => {
       // For custom products, we always create a new line (don't merge)
       // For regular products, we merge quantities if same product+variant
       const existing = await tx.cartLine.findFirst({
-        where: { 
-          cartId: cart.id, 
-          productId: productId || null, 
+        where: {
+          cartId: cart.id,
+          productId: productId || null,
           variantId: variantId || null,
-          customProductId: customProductId || null 
+          customProductId: customProductId || null
         },
       });
 
@@ -339,6 +339,207 @@ router.delete("/lines/:lineId", async (req, res, next) => {
     const updated = await prisma.cart.findUnique({ where: { id: cartId }, include: cartInclude });
     res.json(formatCart(updated));
   } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * 🔄 BATCH OPERATIONS
+ * Process multiple cart operations in a single request with optimized bulk operations
+ */
+router.post("/batch", async (req, res, next) => {
+  try {
+    const { operations } = req.body;
+    const cartId = req.body.cartId || req.cookies.cartId;
+    const userId = req.user?.id || null;
+
+    if (!operations || !Array.isArray(operations) || operations.length === 0) {
+      return res.status(400).json({ error: "Operations array required" });
+    }
+
+    // 🛡️ SECURITY: Limit batch size to prevent DoS
+    if (operations.length > 50) {
+      return res.status(400).json({ error: "Batch size limit exceeded (max 50 operations)" });
+    }
+
+    // 🛡️ SECURITY: Validate operations
+    for (const op of operations) {
+      if (op.quantity !== undefined && (typeof op.quantity !== 'number' || op.quantity < 0)) {
+        return res.status(400).json({ error: "Invalid quantity" });
+      }
+      if (op.type === 'add' && (!op.quantity || op.quantity <= 0)) {
+        return res.status(400).json({ error: "Quantity must be positive for add operations" });
+      }
+    }
+
+    // Get or create cart
+    let cart = cartId
+      ? await prisma.cart.findUnique({ where: { id: cartId } })
+      : null;
+
+    if (!cart) {
+      cart = await getOrCreateCart(userId);
+      if (!userId) {
+        res.cookie("cartId", cart.id, {
+          maxAge: 30 * 24 * 60 * 60 * 1000,
+          httpOnly: true,
+          secure: process.env.NODE_ENV === "production",
+          sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+          domain: process.env.NODE_ENV === "production" ? process.env.COOKIE_DOMAIN : undefined,
+        });
+      }
+    }
+
+    // Process all operations in a single transaction
+    await prisma.$transaction(async (tx) => {
+      // Group operations by type for bulk processing
+      const addOps = operations.filter(op => op.type === "add");
+      const updateOps = operations.filter(op => op.type === "update");
+      const removeOps = operations.filter(op => op.type === "remove");
+
+      // ➕ BULK ADD OPERATIONS
+      if (addOps.length > 0) {
+        for (const op of addOps) {
+          const { productId, variantId, quantity = 1, customProductId } = op;
+
+          // Check if item already exists in cart
+          const existing = await tx.cartLine.findFirst({
+            where: {
+              cartId: cart.id,
+              productId: productId || null,
+              variantId: variantId || null,
+              customProductId: customProductId || null
+            },
+          });
+
+          if (existing) {
+            // Update existing line
+            await tx.cartLine.update({
+              where: { id: existing.id },
+              data: { quantity: existing.quantity + quantity },
+            });
+          } else {
+            // Get price info
+            let priceAmount = "0";
+            let priceCurrency = "INR";
+
+            if (customProductId) {
+              const customProduct = await tx.customProduct.findUnique({
+                where: { id: customProductId }
+              });
+              if (customProduct) {
+                priceAmount = customProduct.price.toString();
+              }
+            } else if (variantId) {
+              const variant = await tx.productVariant.findUnique({
+                where: { id: variantId }
+              });
+              if (variant) {
+                priceAmount = variant.priceAmount.toString();
+                priceCurrency = variant.priceCurrency;
+              }
+            } else if (productId) {
+              const product = await tx.product.findUnique({
+                where: { id: productId }
+              });
+              if (product) {
+                priceAmount = product.minPriceAmount.toString();
+                priceCurrency = product.minPriceCurrency;
+              }
+            }
+
+            // Create new line
+            await tx.cartLine.create({
+              data: {
+                cartId: cart.id,
+                productId: productId || null,
+                variantId: variantId || null,
+                customProductId: customProductId || null,
+                quantity,
+                priceAmount,
+                priceCurrency,
+              },
+            });
+          }
+        }
+      }
+
+      // ✏️ BULK UPDATE OPERATIONS
+      if (updateOps.length > 0) {
+        for (const op of updateOps) {
+          const { lineId, quantity } = op;
+
+          const line = await tx.cartLine.findUnique({ where: { id: lineId } });
+
+          // Skip if line doesn't exist or doesn't belong to this cart
+          if (!line || line.cartId !== cart.id) {
+            console.log(`⚠️ Skipping update for line ${lineId} (not found or doesn't belong to cart)`);
+            continue;
+          }
+
+          if (quantity === 0) {
+            await tx.cartLine.delete({ where: { id: lineId } });
+          } else {
+            await tx.cartLine.update({
+              where: { id: lineId },
+              data: { quantity }
+            });
+          }
+        }
+      }
+
+      // ❌ BULK REMOVE OPERATIONS (Using deleteMany for efficiency)
+      if (removeOps.length > 0) {
+        const lineIdsToRemove = removeOps.map(op => op.lineId);
+
+        // Find which lines actually exist in this cart
+        // (Some might already be removed due to optimistic updates)
+        const linesToRemove = await tx.cartLine.findMany({
+          where: {
+            id: { in: lineIdsToRemove },
+            cartId: cart.id
+          }
+        });
+
+        // Only delete lines that actually exist
+        if (linesToRemove.length > 0) {
+          const existingLineIds = linesToRemove.map(l => l.id);
+
+          await tx.cartLine.deleteMany({
+            where: {
+              id: { in: existingLineIds },
+              cartId: cart.id
+            }
+          });
+
+          console.log(`✅ Removed ${existingLineIds.length} of ${lineIdsToRemove.length} requested lines`);
+        } else {
+          console.log(`⚠️ No lines to remove (already removed or don't exist)`);
+        }
+      }
+
+      // Update total quantity
+      const total = await tx.cartLine.aggregate({
+        where: { cartId: cart.id },
+        _sum: { quantity: true },
+      });
+
+      await tx.cart.update({
+        where: { id: cart.id },
+        data: { totalQuantity: total._sum.quantity || 0 },
+      });
+    });
+
+    // Fetch updated cart
+    const updated = await prisma.cart.findUnique({
+      where: { id: cart.id },
+      include: cartInclude
+    });
+
+    console.log(`✅ Batch operation completed: ${operations.length} operations processed`);
+    res.json(formatCart(updated));
+  } catch (err) {
+    console.error('❌ Batch operation failed:', err);
     next(err);
   }
 });

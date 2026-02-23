@@ -472,10 +472,6 @@ router.put("/bulk-update", isAuthenticated, isAdmin, async (req, res, next) => {
       results.push({ id, success: true });
     }
 
-    // Invalidate cache
-    if (USE_CACHE) {
-      await cache.delPattern('products:*');
-    }
 
     res.json({
       success: true,
@@ -785,9 +781,6 @@ router.delete("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
       await tx.product.delete({ where: { id } });
     });
 
-    // Invalidate cache
-    await cache.del(`product:${product.handle}`);
-    await cache.delPattern('products:*');
 
     res.status(200).json({ success: true, message: "Product Deleted Successfully" });
   } catch (err) {
@@ -885,10 +878,6 @@ router.delete("/bulk-delete", isAuthenticated, isAdmin, async (req, res, next) =
       });
     }
 
-    // Invalidate cache
-    if (USE_CACHE) {
-      await cache.delPattern('products:*');
-    }
 
     res.json({
       success: true,

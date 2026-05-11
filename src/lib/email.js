@@ -154,6 +154,59 @@ export async function sendOrderConfirmationEmail(order) {
 }
 
 /**
+ * 3b. Owner Notification Email (new order alert)
+ */
+export async function sendOwnerOrderNotification(order) {
+  const OWNER_EMAILS = ['urbanicpitara@gmail.com', 'braiinybear@gmail.com'];
+  const subject = `🛒 New Order #${order.orderNumber} - ${order.totalCurrency} ${order.totalAmount}`;
+  
+  const itemsText = order.items.map(item => 
+    `- ${item.product?.title || item.customProduct?.title} x${item.quantity} = ${item.priceCurrency} ${item.priceAmount}`
+  ).join('\n');
+
+  const text = `New order received!\n\nOrder #${order.orderNumber}\nCustomer: ${order.user?.firstName} ${order.user?.lastName} (${order.user?.email})\nTotal: ${order.totalCurrency} ${order.totalAmount}\nPayment: ${order.payment?.method} (${order.payment?.status})\n\nItems:\n${itemsText}\n\nShipping Address:\n${order.shippingAddress?.firstName} ${order.shippingAddress?.lastName}\n${order.shippingAddress?.address1}\n${order.shippingAddress?.address2 || ''}\n${order.shippingAddress?.city}, ${order.shippingAddress?.state} ${order.shippingAddress?.pincode}`;
+
+  const itemsHtml = order.items.map(item => `
+    <tr>
+      <td style="padding: 8px; border-bottom: 1px solid #eee;">
+        ${item.product?.title || item.customProduct?.title}
+        ${item.variant ? `(${item.variant.title})` : ''}
+      </td>
+      <td style="padding: 8px; border-bottom: 1px solid #eee;">x${item.quantity}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #eee;">${item.priceCurrency} ${item.priceAmount}</td>
+    </tr>
+  `).join('');
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto;">
+      <h2 style="color: #e53e3e;">🛒 New Order Received!</h2>
+      <p><strong>Order #${order.orderNumber}</strong></p>
+      <p><strong>Customer:</strong> ${order.user?.firstName} ${order.user?.lastName}<br><strong>Email:</strong> ${order.user?.email}</p>
+      <p><strong>Total:</strong> ${order.totalCurrency} ${order.totalAmount}<br><strong>Payment:</strong> ${order.payment?.method} (${order.payment?.status})</p>
+      
+      <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
+        <thead>
+          <tr style="background: #f9f9f9; text-align: left;">
+            <th style="padding: 8px;">Item</th>
+            <th style="padding: 8px;">Qty</th>
+            <th style="padding: 8px;">Price</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${itemsHtml}
+        </tbody>
+      </table>
+
+      <h4 style="margin-top: 20px;">Shipping Address:</h4>
+      <p>${order.shippingAddress?.firstName} ${order.shippingAddress?.lastName}<br>${order.shippingAddress?.address1}<br>${order.shippingAddress?.address2 || ''}<br>${order.shippingAddress?.city}, ${order.shippingAddress?.state} ${order.shippingAddress?.pincode}</p>
+    </div>
+  `;
+
+  // Send to both owners
+  return Promise.all(OWNER_EMAILS.map(to => sendEmail({ to, subject, text, html })));
+}
+
+/**
  * 4. Admin Generated Password Email
  */
 export async function sendAdminGeneratedPasswordEmail(user, newPassword) {
@@ -192,6 +245,7 @@ export default {
   sendWelcomeEmail,
   sendPasswordResetEmail,
   sendOrderConfirmationEmail,
+  sendOwnerOrderNotification,
   sendAdminGeneratedPasswordEmail,
   sendCustomEmail,
 };

@@ -34,6 +34,15 @@ import customizerRouter from "./routes/customizer.js";
 import adminCustomizerRouter from "./routes/admin-customizer.js";
 import downloadAssetsRouter from "./routes/download-assets.js";
 import variantGroupsRouter from "./routes/variantGroups.js"; // 🆕 Variant Groups
+import orderWorker from "./workers/order-processor.js"; // 🆕 Order Worker
+import { isQueueReady } from "./lib/redis.js";
+
+// Order worker auto-starts when imported (BullMQ worker)
+if (orderWorker) {
+  console.log("✅ Order worker loaded and ready");
+} else {
+  console.log("⚠️  Order worker disabled (Redis not available)");
+}
 
 
 console.log("\n🔍 Validating environment configuration...\n");
@@ -80,6 +89,7 @@ app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     environment: process.env.NODE_ENV || "development",
+    queueReady: isQueueReady(),
     timestamp: new Date().toISOString()
   });
 });
@@ -177,16 +187,24 @@ const server = app.listen(port, () => {
 });
 
 // ✅ Graceful Shutdown
-process.on("SIGTERM", () => {
+process.on("SIGTERM", async () => {
   console.log("\n⚠️  SIGTERM received. Shutting down gracefully...");
+  if (orderWorker) {
+    await orderWorker.close();
+    console.log("✅ Order worker closed");
+  }
   server.close(() => {
     console.log("✅ Server closed");
     process.exit(0);
   });
 });
 
-process.on("SIGINT", () => {
+process.on("SIGINT", async () => {
   console.log("\n⚠️  SIGINT received. Shutting down gracefully...");
+  if (orderWorker) {
+    await orderWorker.close();
+    console.log("✅ Order worker closed");
+  }
   server.close(() => {
     console.log("✅ Server closed");
     process.exit(0);

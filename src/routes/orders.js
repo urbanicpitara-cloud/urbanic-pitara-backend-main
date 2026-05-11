@@ -355,6 +355,7 @@ router.post("/", isAuthenticated, orderLimiter, async (req, res, next) => {
       discountAmount,
       orderNumber,
       paymentMethod,
+      cartId, // Added to allow worker to clear cart
     };
 
     // ----------------- PUSH TO QUEUE OR SYNC -----------------
@@ -426,6 +427,13 @@ router.post("/", isAuthenticated, orderLimiter, async (req, res, next) => {
             currency,
             status: methodUpper === 'COD' || methodUpper === 'PHONEPE' ? 'INITIATED' : 'PAID',
           },
+        });
+
+        // 🗑 CLEAR CART AFTER ORDER CREATION
+        await tx.cartLine.deleteMany({ where: { cartId } });
+        await tx.cart.update({
+          where: { id: cartId },
+          data: { totalQuantity: 0 }
         });
 
         return { ...newOrder, payment: newPayment };

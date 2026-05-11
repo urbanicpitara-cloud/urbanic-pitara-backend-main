@@ -109,6 +109,15 @@ export const orderWorker = redisClient
               },
             });
 
+            // 🗑 CLEAR CART AFTER ORDER CREATION
+            if (orderData.cartId) {
+              await tx.cartLine.deleteMany({ where: { cartId: orderData.cartId } });
+              await tx.cart.update({
+                where: { id: orderData.cartId },
+                data: { totalQuantity: 0 }
+              });
+            }
+
             return { ...newOrder, payment: newPayment };
           });
 

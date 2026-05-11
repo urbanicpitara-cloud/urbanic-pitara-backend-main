@@ -786,4 +786,60 @@ router.put("/admin/:id/status", isAuthenticated, async (req, res, next) => {
   }
 });
 
+// ----------------------- NOTIFICATIONS ----------------------- //
+
+// Get notification counts for admin dashboard
+router.get("/admin/notifications", isAuthenticated, isAdmin, async (req, res, next) => {
+  try {
+    // Count pending/processing orders (not shipped, delivered, canceled, or refunded)
+    const pendingOrdersCount = await prisma.order.count({
+      where: {
+        status: { in: [OrderStatus.PENDING, OrderStatus.PROCESSING] },
+      },
+    });
+
+    // Count low stock products (inventory < 5)
+    const lowStockCount = await prisma.productVariant.count({
+      where: {
+        inventoryQuantity: { lt: 5, gt: 0 },
+      },
+    });
+
+    // Count out of stock products
+    const outOfStockCount = await prisma.productVariant.count({
+      where: {
+        inventoryQuantity: 0,
+      },
+    });
+
+    // Get recent pending orders for dropdown
+    const recentPending = await prisma.order.findMany({
+      where: {
+        status: { in: [OrderStatus.PENDING, OrderStatus.PROCESSING] },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+      select: {
+        id: true,
+        orderNumber: true,
+        totalAmount: true,
+        status: true,
+        createdAt: true,
+        user: { select: { firstName: true, lastName: true } },
+      },
+    });
+
+    res.json({
+      pendingOrders: pendingOrdersCount,
+      lowStock: lowStockCount,
+      outOfStock: outOfStockCount,
+      total: pendingOrdersCount + lowStockCount + outOfStockCount,
+      recentPending,
+    });
+  } catch (error) {
+    console.error('Notifications error:', error);
+    next(error);
+  }
+});
+
 export default router;

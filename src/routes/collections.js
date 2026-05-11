@@ -1,5 +1,6 @@
 import { Router } from "express";
 import prisma from "../lib/prisma.js";
+import { cache } from "../lib/redis.js";
 import { isAuthenticated, isAdmin } from "../middleware/auth.js";
 
 const router = Router();
@@ -13,6 +14,10 @@ const makeHandle = (title) =>
  */
 router.get("/", async (req, res, next) => {
   try {
+    const cacheKey = "collections:all";
+    const cached = await cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
     const collections = await prisma.collection.findMany({
       orderBy: { title: "asc" },
       include: {
@@ -20,17 +25,18 @@ router.get("/", async (req, res, next) => {
       },
     });
 
-    res.json(
-      collections.map((c) => ({
-        id: c.id,
-        title: c.title,
-        handle: c.handle,
-        description: c.description,
-        imageUrl: c.imageUrl,
-        imageAlt: c.imageAlt,
-        productCount: c._count.products,
-      }))
-    );
+    const formatted = collections.map((c) => ({
+      id: c.id,
+      title: c.title,
+      handle: c.handle,
+      description: c.description,
+      imageUrl: c.imageUrl,
+      imageAlt: c.imageAlt,
+      productCount: c._count.products,
+    }));
+
+    await cache.set(cacheKey, formatted, 1800); // 30 mins
+    res.json(formatted);
   } catch (err) {
     next(err);
   }
@@ -45,6 +51,12 @@ router.get("/:handle", async (req, res, next) => {
     const page = req.query.page ? Math.max(parseInt(req.query.page ), 1) : null;
     const limit = req.query.limit ? Math.max(parseInt(req.query.limit), 1) : null;
     const skip = page && limit ? (page - 1) * limit : undefined;
+
+    // Cache key includes pagination for individual pages if needed, 
+    // or we cache the base data.
+    const cacheKey = `collection:${handle}:${page || 1}:${limit || "all"}`;
+    const cached = await cache.get(cacheKey);
+    if (cached) return res.json(cached);
 
     // Fetch collection
     const collection = await prisma.collection.findUnique({
@@ -71,7 +83,7 @@ router.get("/:handle", async (req, res, next) => {
       where: { collections: { some: { id: collection.id } } },
     });
 
-    res.json({
+    const response = {
       id: collection.id,
       title: collection.title,
       handle: collection.handle,
@@ -102,7 +114,10 @@ router.get("/:handle", async (req, res, next) => {
             totalPages: Math.max(Math.ceil(totalProducts / limit), 1),
           }
         : undefined, // no pagination info if fetching all
-    });
+    };
+
+    await cache.set(cacheKey, response, 600); // 10 mins
+    res.json(response);
   } catch (err) {
     next(err);
   }
@@ -186,6 +201,7 @@ router.post("/", isAuthenticated, isAdmin, async (req, res, next) => {
       data: { title, handle: collectionHandle, description, imageUrl, imageAlt },
     });
 
+    await cache.del("collections:all"); // Invalidate list
     res.status(201).json(collection);
   } catch (err) {
     next(err);
@@ -230,6 +246,11 @@ router.put("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
       },
     });
 
+    // Invalidate
+    await cache.del("collections:all");
+    await cache.delPattern(`collection:${collection.handle}:*`);
+    if(newHandle) await cache.delPattern(`collection:${newHandle}:*`);
+
     res.json(updated);
   } catch (err) {
     next(err);
@@ -248,13 +269,12 @@ router.delete("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
       return res.status(404).json({ error: "Collection not found" });
 
     await prisma.$transaction(async (tx) => {
-      // Optional: Set collectionId to null for its products
-      // M-N relation handles cleanup automatically when collection is deleted
-
-
       // Delete collection
       await tx.collection.delete({ where: { id } });
     });
+
+    await cache.del("collections:all");
+    await cache.delPattern(`collection:${existing.handle}:*`);
 
     res.json({ message: "Collection deleted successfully" });
   } catch (err) {
@@ -285,6 +305,8 @@ router.post("/:id/products", isAuthenticated, isAdmin, async (req, res, next) =>
         })
       )
     );
+
+    await cache.delPattern(`collection:${exists.handle}:*`);
 
     res.json({ message: "Products added to collection successfully" });
   } catch (err) {
@@ -331,6 +353,8 @@ router.post("/:id/products/by-rule", isAuthenticated, isAdmin, async (req, res, 
       )
     );
 
+    await cache.delPattern(`collection:${collection.handle}:*`);
+
     res.json({ message: "Products added by rule successfully", count: products.length });
   } catch (err) {
     next(err);
@@ -361,6 +385,8 @@ router.delete("/:id/products", isAuthenticated, isAdmin, async (req, res, next) 
         })
       )
     );
+
+    await cache.delPattern(`collection:${exists.handle}:*`);
 
     res.json({ message: "Products removed from collection successfully" });
   } catch (err) {

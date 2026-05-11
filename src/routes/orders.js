@@ -1,9 +1,10 @@
 import { Router } from "express";
 import { DiscountType, OrderStatus, Prisma } from "@prisma/client";
 import prisma from "../lib/prisma.js";
+import { orderQueue } from "../lib/redis.js";
 import { isAdmin, isAuthenticated } from "../middleware/auth.js";
 import { z } from "zod";
-import { sendOrderConfirmationEmail } from "../lib/email.js";
+import { sendOrderConfirmationEmail, sendOwnerOrderNotification } from "../lib/email.js";
 import rateLimit from "express-rate-limit";
 
 
@@ -251,9 +252,6 @@ router.post("/", isAuthenticated, orderLimiter, async (req, res, next) => {
       return res.status(403).json({ error: "Not authorized to access this cart" });
 
     // If server cart is empty, allow an optional client-provided snapshot as a fallback.
-    // This helps when the client has an up-to-date cart UI but the server cart is stale
-    // (for example when using client-side carts). The snapshot must be provided by the client
-    // and will be used only when server cart has no lines.
     let cartLinesSource = cart.lines;
 
     if ((!cart.lines || cart.lines.length === 0) && parsed.cartSnapshot && parsed.cartSnapshot.length > 0) {
@@ -327,175 +325,117 @@ router.post("/", isAuthenticated, orderLimiter, async (req, res, next) => {
     const totalAmount = subtotal.toFixed(2);
     const orderNumber = `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
-    // ----------------- TRANSACTION -----------------
-    const orderWithPayment = await prisma.$transaction(async (tx) => {
-      let shippingAddrId;
-      let billingAddrId;
+    // ----------------- ADDRESS RESOLUTION -----------------
+    // We need to resolve addresses synchronously to ensure they exist
+    let shippingAddrId = shippingAddressId;
+    let billingAddrId = billingAddressId;
 
-      // ----------------- SHIPPING ADDRESS -----------------
-      if (shippingAddressId) {
-        shippingAddrId = shippingAddressId;
-      } else if (shippingAddress) {
-        const newShipping = await tx.address.create({ data: { ...shippingAddress, userId: req.user.id } });
-        shippingAddrId = newShipping.id;
-      } else {
-        throw new Error("Shipping address required");
-      }
+    if (!shippingAddrId && shippingAddress) {
+      const newShipping = await prisma.address.create({ data: { ...shippingAddress, userId: req.user.id } });
+      shippingAddrId = newShipping.id;
+    }
 
-      // ----------------- BILLING ADDRESS -----------------
-      if (billingAddressId) {
-        billingAddrId = billingAddressId;
-      } else if (billingAddress) {
-        const newBilling = await tx.address.create({ data: { ...billingAddress, userId: req.user.id } });
-        billingAddrId = newBilling.id;
-      } else {
-        billingAddrId = shippingAddrId;
-      }
+    if (!billingAddrId && billingAddress) {
+      const newBilling = await prisma.address.create({ data: { ...billingAddress, userId: req.user.id } });
+      billingAddrId = newBilling.id;
+    } else if (!billingAddrId) {
+      billingAddrId = shippingAddrId;
+    }
 
-      // ----------------- CREATE ORDER -----------------
-      const newOrder = await tx.order.create({
-        data: {
-          orderNumber,
-          userId: req.user.id,
-          status: OrderStatus.PENDING,
-          totalAmount,
-          totalCurrency: currency,
-          shippingAddressId: shippingAddrId,
-          billingAddressId: billingAddrId,
-          ...(appliedDiscount && {
-            appliedDiscountId: appliedDiscount.id,
-            discountAmount: discountAmount.toFixed(2),
-          }),
-          items: {
-            create: cartLinesSource.map((line) => ({
-              productId: line.productId || null,
-              variantId: line.variantId || null,
-              customProductId: line.customProductId || null,
-              quantity: line.quantity,
-              priceAmount: new Prisma.Decimal(line.priceAmount),
-              priceCurrency: line.priceCurrency,
-            })),
+    if (!shippingAddrId) throw new Error("Shipping address required");
+
+    // ----------------- PREPARE DATA FOR QUEUE -----------------
+    const orderData = {
+      cartLinesSource,
+      totalAmount,
+      currency,
+      shippingAddrId,
+      billingAddrId,
+      appliedDiscount,
+      discountAmount,
+      orderNumber,
+      paymentMethod,
+    };
+
+    // ----------------- PUSH TO QUEUE OR SYNC -----------------
+    if (orderQueue) {
+      await orderQueue.add('process-order', { orderData, userId: req.user.id });
+      res.status(202).json({ message: "Order initiated", orderNumber });
+    } else {
+      console.log('Redis disabled: Processing order synchronously...');
+      // ✅ Fallback: Synchronous processing (no Redis needed)
+      const order = await prisma.$transaction(async (tx) => {
+        const newOrder = await tx.order.create({
+          data: {
+            orderNumber,
+            userId: req.user.id,
+            status: 'PENDING',
+            totalAmount,
+            totalCurrency: currency,
+            shippingAddressId: shippingAddrId,
+            billingAddressId: billingAddrId,
+            ...(appliedDiscount && {
+              appliedDiscountId: appliedDiscount.id,
+              discountAmount: discountAmount.toFixed(2),
+            }),
+            items: {
+              create: cartLinesSource.map((line) => ({
+                productId: line.productId || null,
+                variantId: line.variantId || null,
+                customProductId: line.customProductId || null,
+                quantity: line.quantity,
+                priceAmount: new Prisma.Decimal(line.priceAmount),
+                priceCurrency: line.priceCurrency,
+              })),
+            },
           },
-        },
-        include: {
-          items: { include: { product: { include: { images: { take: 1 } } }, variant: true, customProduct: true } },
-          shippingAddress: true,
-          billingAddress: true,
-          appliedDiscount: true,
-          user: true,
-        },
-      });
-
-      // ✅ DECREMENT PRODUCT QUANTITIES (Optimized)
-      // 1. Gather all items needing inventory update
-      const itemsToUpdate = [];
-      const productIdsToResolve = [];
-
-      for (const item of cartLinesSource) {
-        if (item.customProductId) continue; // Skip custom products
-
-        if (item.variantId) {
-          itemsToUpdate.push({ variantId: item.variantId, quantity: item.quantity });
-        } else if (item.productId) {
-          // Defer lookup
-          productIdsToResolve.push({ productId: item.productId, quantity: item.quantity });
-        }
-      }
-
-      // 2. Resolve missing variantIds in parallel
-      if (productIdsToResolve.length > 0) {
-        // Fetch valid variants for these products (assuming first variant)
-        const productsWithVariants = await tx.productVariant.findMany({
-          where: {
-            productId: { in: productIdsToResolve.map((p) => p.productId) },
+          include: {
+            items: { include: { product: true, variant: true, customProduct: true } },
+            shippingAddress: true,
+            billingAddress: true,
+            appliedDiscount: true,
+            user: true,
           },
-          orderBy: { id: 'asc' }, // Ensure deterministic "first" variant
-          distinct: ['productId'], // Postgres specific: get one per product
-          select: { id: true, productId: true },
         });
 
-        const variantMap = new Map(productsWithVariants.map(v => [v.productId, v.id]));
-
-        for (const p of productIdsToResolve) {
-          const resolvedVariantId = variantMap.get(p.productId);
-          if (resolvedVariantId) {
-            itemsToUpdate.push({ variantId: resolvedVariantId, quantity: p.quantity });
+        for (const item of cartLinesSource) {
+          if (item.customProductId) continue;
+          if (item.variantId) {
+            await tx.productVariant.update({
+              where: { id: item.variantId },
+              data: { inventoryQuantity: { decrement: item.quantity } },
+            });
+          } else if (item.productId) {
+            const variant = await tx.productVariant.findFirst({ where: { productId: item.productId } });
+            if (variant) {
+              await tx.productVariant.update({
+                where: { id: variant.id },
+                data: { inventoryQuantity: { decrement: item.quantity } },
+              });
+            }
           }
         }
-      }
 
-      // 3. Aggregate quantities by variantId to prevent multiple updates to same row
-      const updatesByVariant = new Map();
-      for (const item of itemsToUpdate) {
-        const current = updatesByVariant.get(item.variantId) || 0;
-        updatesByVariant.set(item.variantId, current + item.quantity);
-      }
+        const methodUpper = (paymentMethod || 'COD').toUpperCase();
+        const newPayment = await tx.payment.create({
+          data: {
+            orderId: newOrder.id,
+            method: methodUpper || 'COD',
+            provider: methodUpper === 'PHONEPE' ? 'PHONEPE' : null,
+            amount: new Prisma.Decimal(totalAmount),
+            currency,
+            status: methodUpper === 'COD' || methodUpper === 'PHONEPE' ? 'INITIATED' : 'PAID',
+          },
+        });
 
-      // 4. Parrallel Execution of Updates
-      await Promise.all(
-        Array.from(updatesByVariant.entries()).map(([variantId, qty]) =>
-          tx.productVariant.update({
-            where: { id: variantId },
-            data: { inventoryQuantity: { decrement: qty } },
-          })
-        )
-      );
-
-      // ----------------- CREATE PAYMENT -----------------
-      // Payment status: for COD and external providers (e.g. PHONEPE) mark as INITIATED.
-      // For legacy/non-external methods we may mark as PAID. This prevents marking
-      // external-provider payments as paid before callback verification.
-      const methodUpper = (paymentMethod || "COD").toUpperCase();
-      const isExternalProvider = methodUpper === "PHONEPE";
-
-      const newPayment = await tx.payment.create({
-        data: {
-          orderId: newOrder.id,
-          method: methodUpper || "COD",
-          provider: isExternalProvider ? "PHONEPE" : null,
-          amount: new Prisma.Decimal(totalAmount),
-          currency,
-          status: methodUpper === "COD" || isExternalProvider ? "INITIATED" : "PAID",
-        },
+        return { ...newOrder, payment: newPayment };
       });
 
-      // ----------------- CLEAR CART -----------------
-      // Only clear server-side cart if it actually had lines. If we used a client snapshot
-      // there is nothing to clear on the server.
-      if (cart.lines && cart.lines.length > 0) {
-        await tx.cartLine.deleteMany({ where: { cartId } });
-        await tx.cart.update({ where: { id: cartId }, data: { totalQuantity: 0 } });
-      }
-
-      return { ...newOrder, payment: newPayment };
-    }, {
-      maxWait: 5000, // default: 2000
-      timeout: 20000, // default: 5000
-    });
-
-    // ----------------- SEND EMAIL -----------------
-    sendOrderConfirmationEmail(orderWithPayment).catch(err => console.error("Failed to send order confirmation email:", err));
-
-    // ----------------- RESPONSE -----------------
-    res.status(201).json({
-      id: orderWithPayment.id,
-      status: orderWithPayment.status,
-      createdAt: orderWithPayment.placedAt,
-      totalAmount: orderWithPayment.totalAmount,
-      totalCurrency: orderWithPayment.totalCurrency,
-      discount: orderWithPayment.appliedDiscount
-        ? { code: orderWithPayment.appliedDiscount.code, amount: orderWithPayment.discountAmount }
-        : null,
-      payment: {
-        method: orderWithPayment.payment.method,
-        status: orderWithPayment.payment.status,
-        amount: orderWithPayment.payment.amount,
-        currency: orderWithPayment.payment.currency,
-      },
-      shippingAddress: orderWithPayment.shippingAddress,
-      billingAddress: orderWithPayment.billingAddress,
-      items: orderWithPayment.items.map(mapOrderItem),
-    });
+      await sendOrderConfirmationEmail(order);
+      await sendOwnerOrderNotification(order);
+      console.log(`✅ Order ${order.orderNumber} processed successfully (sync mode)`);
+      res.status(201).json({ message: "Order placed successfully", order });
+    }
   } catch (error) {
     if (error instanceof z.ZodError) {
       return res.status(400).json({ error: error.errors });

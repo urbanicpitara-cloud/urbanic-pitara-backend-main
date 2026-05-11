@@ -8,39 +8,49 @@ if (!REDIS_ENABLED) {
   console.warn('⚠️  Redis is DISABLED (set REDIS_ENABLED=true to enable)');
 }
 
-// Initialize Redis connection using Upstash REST API
-const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
-const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+// Support both Upstash REST API and standard Redis (Render, etc.)
+const redisUrl = process.env.UPSTASH_REDIS_REST_URL || process.env.REDIS_URL;
+const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.REDIS_PASSWORD;
 
-if (REDIS_ENABLED && (!redisUrl || !redisToken)) {
-  console.warn('⚠️  Redis credentials not found. Caching and queue disabled.');
+if (REDIS_ENABLED && !redisUrl) {
+  console.warn('⚠️  Redis URL not found. Set UPSTASH_REDIS_REST_URL or REDIS_URL');
 }
 
+// Detect if using Upstash (HTTPS-based) vs standard Redis
+const isUpstash = redisUrl?.startsWith('https://') || process.env.UPSTASH_REDIS_REST_URL;
+
 // Fix invalid URL protocol from Upstash (https -> rediss)
-const fixUrl = (url) => {
+const fixUpstashUrl = (url) => {
   if (!url) return null;
   if (url.startsWith('https://')) {
     return url.replace('https://', 'rediss://');
   }
-  if (!url.startsWith('rediss://') && !url.startsWith('redis://')) {
-    return `rediss://${url}`;
-  }
   return url;
 };
 
-const connectionUrl = fixUrl(redisUrl);
+const connectionUrl = isUpstash ? fixUpstashUrl(redisUrl) : redisUrl;
 
-// Create Redis client for Upstash
-const redisClient = REDIS_ENABLED && connectionUrl && redisToken
-  ? new Redis(connectionUrl, {
-      tls: {
-        rejectUnauthorized: false
-      },
+// Create Redis client
+let redisClient = null;
+
+if (REDIS_ENABLED && connectionUrl) {
+  if (isUpstash) {
+    // Upstash: uses REST API with token auth
+    redisClient = new Redis(connectionUrl, {
+      tls: { rejectUnauthorized: false },
       password: redisToken,
-      maxRetriesPerRequest: null, // Required for BullMQ
-      family: 4, // Force IPv4
-    })
-  : null;
+      maxRetriesPerRequest: null,
+      family: 4,
+    });
+  } else {
+    // Standard Redis (Render, self-hosted, etc.)
+    redisClient = new Redis(connectionUrl, {
+      maxRetriesPerRequest: null,
+      family: 4,
+      retryStrategy: (times) => Math.min(times * 50, 2000),
+    });
+  }
+}
 
 // Test connection
 if (redisClient) {
@@ -107,12 +117,19 @@ export const cache = {
   },
 
   /**
-   * Delete all keys matching pattern
+   * Delete all keys matching pattern (uses SCAN for production safety)
    */
   async delPattern(pattern) {
     if (!redisClient) return false;
     try {
-      const keys = await redisClient.keys(pattern);
+      // Use SCAN instead of KEYS (O(N) -> O(1) per iteration)
+      const scan = redisClient.scanStream({ match: pattern, count: 100 });
+      const keys = await new Promise((resolve, reject) => {
+        const found = [];
+        scan.on('data', (k) => found.push(...k));
+        scan.on('end', () => resolve(found));
+        scan.on('error', reject);
+      });
       if (keys.length > 0) {
         await redisClient.del(...keys);
       }
@@ -124,4 +141,24 @@ export const cache = {
   },
 };
 
-export { redisClient, orderQueue };
+/**
+ * Health check for Redis connection
+ */
+export async function checkRedisHealth() {
+  if (!redisClient) return { healthy: false, reason: 'Redis not enabled' };
+  try {
+    await redisClient.ping();
+    return { healthy: true };
+  } catch (error) {
+    return { healthy: false, reason: error.message };
+  }
+}
+
+/**
+ * Check if queue is ready (non-null)
+ */
+export function isQueueReady() {
+  return orderQueue !== null;
+}
+
+export { redisClient, orderQueue, cache as default };

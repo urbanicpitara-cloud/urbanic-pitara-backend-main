@@ -1,5 +1,6 @@
 import { Router } from "express";
 import prisma from "../lib/prisma.js";
+import { cache } from "../lib/redis.js";
 import { isAuthenticated, isAdmin } from "../middleware/auth.js";
 import { stripHtml } from "string-strip-html";
 
@@ -137,8 +138,13 @@ router.get("/:handle", async (req, res, next) => {
   try {
     const { handle } = req.params;
 
-    // Try cache first (only in production)
+    // Try cache first
+    const cacheKey = `product:${handle}`;
+    const cachedProduct = await cache.get(cacheKey);
 
+    if (cachedProduct) {
+      return res.json(cachedProduct);
+    }
 
     const product = await prisma.product.findUnique({
       where: { handle },
@@ -171,7 +177,8 @@ router.get("/:handle", async (req, res, next) => {
       tags: product.tags.map((t) => t.tag),
     };
 
-
+    // Store in cache for 10 minutes (600s)
+    await cache.set(cacheKey, response, 600);
 
     res.json(response);
   } catch (err) {
@@ -671,6 +678,9 @@ router.put("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
       return product;
     });
 
+    // Invalidate old and new cache keys
+    await cache.del(`product:${existing.handle}`, `product:${updated.handle}`);
+
     // 6️⃣ Fetch full updated product
     const fullProduct = await prisma.product.findUnique({
       where: { id: updated.id },
@@ -709,10 +719,10 @@ router.delete("/bulk-delete", isAuthenticated, isAdmin, async (req, res, next) =
       return res.status(400).json({ error: "No product IDs provided." });
     }
 
-    // ✅ Check all exist
+    // ✅ Find products first for cache invalidation
     const products = await prisma.product.findMany({
       where: { id: { in: ids } },
-      select: { id: true },
+      select: { id: true, handle: true },
     });
 
     if (products.length === 0) {
@@ -740,6 +750,11 @@ router.delete("/bulk-delete", isAuthenticated, isAdmin, async (req, res, next) =
       await tx.product.deleteMany({ where: { id: { in: ids } } });
     });
 
+    // Invalidate cache
+    for (const product of products) {
+        await cache.del(`product:${product.handle}`);
+    }
+
     res.json({
       success: true,
       message: `🗑️ Deleted ${ids.length} product${ids.length > 1 ? "s" : ""} successfully.`,
@@ -760,7 +775,6 @@ router.delete("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
   try {
 
     const { id } = req.params;
-    console.log(id)
     const product = await prisma.product.findUnique({ where: { id } });
     if (!product)
       return res.status(404).json({ error: "Product not found" });
@@ -780,6 +794,9 @@ router.delete("/:id", isAuthenticated, isAdmin, async (req, res, next) => {
       await tx.orderItem.deleteMany({ where: { productId: id } });
       await tx.product.delete({ where: { id } });
     });
+    
+    // Invalidate cache
+    await cache.del(`product:${product.handle}`);
 
 
     res.status(200).json({ success: true, message: "Product Deleted Successfully" });

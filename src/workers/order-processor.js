@@ -1,7 +1,7 @@
 import { Worker } from 'bullmq';
 import { redisClient } from '../lib/redis.js';
 import prisma from '../lib/prisma.js';
-import { sendOrderConfirmationEmail } from '../lib/email.js';
+import { sendOrderConfirmationEmail, sendOwnerOrderNotification } from '../lib/email.js';
 import { Prisma, OrderStatus } from '@prisma/client';
 
 /**
@@ -112,8 +112,11 @@ export const orderWorker = redisClient
             return { ...newOrder, payment: newPayment };
           });
 
-          // Send confirmation email
-          await sendOrderConfirmationEmail(orderWithPayment);
+          // Send notifications (Customer & Owner)
+          await Promise.all([
+            sendOrderConfirmationEmail(orderWithPayment),
+            sendOwnerOrderNotification(orderWithPayment)
+          ]);
 
           console.log(`✅ Order ${orderWithPayment.id} processed successfully`);
           

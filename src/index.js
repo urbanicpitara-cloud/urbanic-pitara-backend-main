@@ -67,8 +67,14 @@ configureHttpsRedirect(app);
 // ✅ CORS Configuration (Strict in Production)
 configureCors(app);
 
-// ✅ Logging Middleware
-app.use(morgan(isProductionMode() ? "combined" : "dev"));
+// ✅ Logging Middleware (includes response time in production)
+app.use(
+  morgan(
+    isProductionMode()
+      ? ':remote-addr - :remote-user [:date[clf]] ":method :url HTTP/:http-version" :status :res[content-length] ":referrer" ":user-agent" - :response-time ms'
+      : "dev"
+  )
+);
 
 // ✅ Compression
 app.use(compression());

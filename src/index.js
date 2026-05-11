@@ -70,7 +70,12 @@ app.use(cookieParser());
 // ✅ JSON Parser with size limit
 app.use(express.json({ limit: "1mb" }));
 
-// ✅ Health check endpoint (no rate limit)
+// ✅ Root health check for Render probes (must return 200)
+app.get("/", (_req, res) => {
+  res.json({ ok: true, service: "urbanic-pitara-api" });
+});
+
+// ✅ Detailed health check endpoint (no rate limit)
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,

@@ -30,7 +30,7 @@ const fixUrl = (url) => {
 
 const connectionUrl = fixUrl(redisUrl);
 
-// Create Redis client for Upstash
+// Create Redis client for Upstash with robust retry strategy
 const redisClient = REDIS_ENABLED && connectionUrl && redisToken
   ? new Redis(connectionUrl, {
       tls: {
@@ -39,17 +39,34 @@ const redisClient = REDIS_ENABLED && connectionUrl && redisToken
       password: redisToken,
       maxRetriesPerRequest: null, // Required for BullMQ
       family: 4, // Force IPv4
+      retryStrategy(times) {
+        // Exponential backoff: 200ms, 400ms, 800ms... capped at 30s
+        const delay = Math.min(times * 200, 30000);
+        console.log(`🔄 Redis reconnect attempt #${times} in ${delay}ms`);
+        return delay;
+      },
+      reconnectOnError(err) {
+        // Reconnect on READONLY errors (failover)
+        return err.message.includes('READONLY');
+      },
     })
   : null;
 
-// Test connection
+// Throttled error logging to prevent log spam
+let lastRedisErrorLog = 0;
+const REDIS_ERROR_LOG_INTERVAL = 30000; // Log at most once per 30s
+
 if (redisClient) {
   redisClient.on('connect', () => {
     console.log('✅ Redis connected successfully');
   });
 
   redisClient.on('error', (err) => {
-    console.error('❌ Redis connection error:', err.message);
+    const now = Date.now();
+    if (now - lastRedisErrorLog > REDIS_ERROR_LOG_INTERVAL) {
+      console.error('❌ Redis connection error:', err.message);
+      lastRedisErrorLog = now;
+    }
   });
 }
 

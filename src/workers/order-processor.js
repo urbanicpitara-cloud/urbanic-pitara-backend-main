@@ -135,6 +135,9 @@ export const orderWorker = redisClient
   : null;
 
 // Worker event handlers
+let lastWorkerErrorLog = 0;
+const WORKER_ERROR_LOG_INTERVAL = 30000; // Log at most once per 30s
+
 if (orderWorker) {
   orderWorker.on('completed', (job) => {
     console.log(`✅ Job ${job.id} completed`);
@@ -145,7 +148,11 @@ if (orderWorker) {
   });
 
   orderWorker.on('error', (err) => {
-    console.error('Worker error:', err);
+    const now = Date.now();
+    if (now - lastWorkerErrorLog > WORKER_ERROR_LOG_INTERVAL) {
+      console.error('Worker error:', err.message);
+      lastWorkerErrorLog = now;
+    }
   });
 }
 

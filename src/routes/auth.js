@@ -205,7 +205,8 @@ router.post("/forgot-password", async (req, res, next) => {
     // Construct frontend reset link
     const resetLink = `${process.env.FRONTEND_URL || "http://localhost:3000"}/reset-password?token=${resetToken}`;
 
-      // Queue the reset email
+    // Queue the reset email
+    try {
       if (emailQueue) {
         await emailQueue.add('password-reset', { type: 'password-reset', payload: { user, resetLink } });
       }

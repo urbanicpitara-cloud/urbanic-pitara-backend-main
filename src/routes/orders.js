@@ -4,7 +4,7 @@ import prisma from "../lib/prisma.js";
 import { orderQueue } from "../lib/redis.js";
 import { isAdmin, isAuthenticated } from "../middleware/auth.js";
 import { z } from "zod";
-import { sendOrderConfirmationEmail, sendOwnerOrderNotification } from "../lib/email.js";
+import { emailQueue } from "../lib/redis.js";
 import rateLimit from "express-rate-limit";
 
 
@@ -732,8 +732,13 @@ router.post("/admin/:id/invoice", isAuthenticated, async (req, res, next) => {
 
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    // Send invoice
-    await sendOrderConfirmationEmail(order);
+    // Queue invoice email
+    if (emailQueue) {
+      await emailQueue.add('order-confirmation', { 
+        type: 'order-confirmation', 
+        payload: { order } 
+      });
+    }
 
     res.json({ success: true, message: "Invoice sent successfully" });
   } catch (error) {

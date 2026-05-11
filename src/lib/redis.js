@@ -85,9 +85,15 @@ if (redisClient) {
   });
 }
 
-// Create BullMQ Queue for order processing
+// Create BullMQ Queues
 const orderQueue = redisClient
   ? new Queue('orders', {
+      connection: redisClient,
+    })
+  : null;
+
+const emailQueue = redisClient
+  ? new Queue('emails', {
       connection: redisClient,
     })
   : null;
@@ -183,4 +189,4 @@ export function isQueueReady() {
   return orderQueue !== null;
 }
 
-export { redisClient, orderQueue, cache as default };
+export { redisClient, orderQueue, emailQueue, cache as default };

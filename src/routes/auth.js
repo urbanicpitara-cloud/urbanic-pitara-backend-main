@@ -8,7 +8,7 @@ import {
   setAuthCookie,
   clearAuthCookie,
 } from "../middleware/auth.js";
-import { sendWelcomeEmail, sendPasswordResetEmail } from "../lib/email.js";
+import { emailQueue } from "../lib/redis.js";
 
 const router = Router();
 
@@ -64,8 +64,11 @@ router.post(["/register", "/signup"], async (req, res, next) => {
     const token = generateToken(user.id);
     setAuthCookie(res, token);
     
-    // Send welcome email (fire and forget)
-    sendWelcomeEmail(user).catch(err => console.error("Failed to send welcome email:", err));
+    // Send welcome email via queue
+    if (emailQueue) {
+      emailQueue.add('welcome', { type: 'welcome', payload: { user } })
+        .catch(err => console.error("Failed to queue welcome email:", err));
+    }
 
     res.status(201).json({
       user: sanitizeUser(user),
@@ -202,9 +205,10 @@ router.post("/forgot-password", async (req, res, next) => {
     // Construct frontend reset link
     const resetLink = `${process.env.FRONTEND_URL || "http://localhost:3000"}/reset-password?token=${resetToken}`;
 
-    // Try to send the reset link via email. Use centralized service.
-    try {
-      await sendPasswordResetEmail(user, resetLink);
+      // Queue the reset email
+      if (emailQueue) {
+        await emailQueue.add('password-reset', { type: 'password-reset', payload: { user, resetLink } });
+      }
 
       // In production don't return the reset link in the response.
       const includeLink = process.env.NODE_ENV !== "production";
@@ -213,8 +217,8 @@ router.post("/forgot-password", async (req, res, next) => {
         ...(includeLink ? { resetLink } : {}),
       });
     } catch (emailErr) {
-      // If sending fails, log for debugging and still return generic success
-      console.error("Failed to send reset email:", emailErr);
+      // If queuing fails, log for debugging and still return generic success
+      console.error("Failed to queue reset email:", emailErr);
       console.log("🔗 Password reset link (fallback):", resetLink);
       res.json({ message: "Password reset link generated." });
     }

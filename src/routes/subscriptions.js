@@ -2,6 +2,7 @@
 import express from "express";
 import prisma from "../lib/prisma.js";
 import { z } from "zod";
+import { emailQueue } from "../lib/redis.js";
 import { isAuthenticated, isAdmin } from "../middleware/auth.js";
 
 const router = express.Router();
@@ -201,25 +202,21 @@ router.post("/admin/email", isAuthenticated, isAdmin, async (req, res, next) => 
       return res.status(404).json({ error: "No subscribers found to email" });
     }
 
-    // In production, use a queue. For now, we'll try to process safely.
-    // Importing dynamically to avoid circular dependency issues if any, though not strictly needed here.
-    const { sendCustomEmail } = await import("../lib/email.js");
-
-    // Process in chunks or just fire and forget if the list isn't huge.
-    // We'll use Promise.allSettled
-    Promise.allSettled(
-      targetEmails.map(email => 
-        sendCustomEmail({
-          to: email,
-          subject,
-          html: isHtml ? message : `<p>${message.replace(/\n/g, "<br>")}</p>`,
-          text: isHtml ? message.replace(/<[^>]*>/g, "") : message,
+    // Process via email queue
+    if (emailQueue) {
+      const emailJobs = targetEmails.map(email => 
+        emailQueue.add('subscriber-email', {
+          type: 'custom',
+          payload: {
+            to: email,
+            subject,
+            html: isHtml ? message : `<p>${message.replace(/\n/g, "<br>")}</p>`,
+            text: isHtml ? message.replace(/<[^>]*>/g, "") : message,
+          }
         })
-      )
-    ).then(results => {
-      const successCount = results.filter(r => r.status === 'fulfilled').length;
-      console.log(`Sent ${successCount}/${targetEmails.length} emails to subscribers`);
-    });
+      );
+      await Promise.all(emailJobs);
+    }
 
     res.json({ message: `Email sending started for ${targetEmails.length} subscribers` });
 

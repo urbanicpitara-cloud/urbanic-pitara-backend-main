@@ -2,7 +2,7 @@ import { Router } from "express";
 import prisma from "../lib/prisma.js";
 import bcrypt from "bcrypt";
 import { isAuthenticated, isAdmin } from "../middleware/auth.js";
-import { sendAdminGeneratedPasswordEmail, sendCustomEmail } from "../lib/email.js";
+import { emailQueue } from "../lib/redis.js";
 
 const router = Router();
 
@@ -158,8 +158,13 @@ router.put("/:id/reset-password", isAuthenticated, isAdmin, async (req, res, nex
       data: { passwordHash },
     });
 
-    // Send new password via email
-    await sendAdminGeneratedPasswordEmail(user, newPassword);
+    // Queue new password via email
+    if (emailQueue) {
+      await emailQueue.add('admin-generated-password', { 
+        type: 'admin-generated-password', 
+        payload: { user, newPassword } 
+      });
+    }
 
     res.json({ success: true, message: "Password reset successfully", newPassword });
   } catch (err) {
@@ -320,21 +325,21 @@ router.post("/admin/email", isAuthenticated, isAdmin, async (req, res, next) => 
       return res.status(404).json({ success: false, message: "No valid users found to email" });
     }
 
-    // Send emails in background (fire and forget) to prevent timeout
-    // In a real production app, use a queue (Bull/Redis). Here we use Promise.allSettled.
-    Promise.allSettled(
-      users.map((user) =>
-        sendCustomEmail({
-          to: user.email,
-          subject,
-          html: isHtml ? message : `<p>${message.replace(/\n/g, "<br>")}</p>`,
-          text: isHtml ? message.replace(/<[^>]*>/g, "") : message,
+    // Send emails in background via queue
+    if (emailQueue) {
+      const emailJobs = users.map((user) =>
+        emailQueue.add('custom-email', {
+          type: 'custom',
+          payload: {
+            to: user.email,
+            subject,
+            html: isHtml ? message : `<p>${message.replace(/\n/g, "<br>")}</p>`,
+            text: isHtml ? message.replace(/<[^>]*>/g, "") : message,
+          },
         })
-      )
-    ).then((results) => {
-      const sent = results.filter((r) => r.status === "fulfilled" && r.value).length;
-      console.log(`📧 Bulk email: Sent ${sent}/${users.length} emails`);
-    });
+      );
+      await Promise.all(emailJobs);
+    }
 
     res.json({
       success: true,

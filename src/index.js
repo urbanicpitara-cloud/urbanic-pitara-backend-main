@@ -35,6 +35,7 @@ import adminCustomizerRouter from "./routes/admin-customizer.js";
 import downloadAssetsRouter from "./routes/download-assets.js";
 import variantGroupsRouter from "./routes/variantGroups.js"; // 🆕 Variant Groups
 import orderWorker from "./workers/order-processor.js"; // 🆕 Order Worker
+import emailWorker from "./workers/email-processor.js"; // 🆕 Email Worker
 import { isQueueReady } from "./lib/redis.js";
 
 // Order worker auto-starts when imported (BullMQ worker)

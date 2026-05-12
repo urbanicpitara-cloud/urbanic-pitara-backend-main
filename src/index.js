@@ -33,7 +33,8 @@ import paymentRouter from "./routes/payment.js";
 import customizerRouter from "./routes/customizer.js";
 import adminCustomizerRouter from "./routes/admin-customizer.js";
 import downloadAssetsRouter from "./routes/download-assets.js";
-import variantGroupsRouter from "./routes/variantGroups.js"; // 🆕 Variant Groups
+import variantGroupsRouter from "./routes/variantGroups.js";
+import catalogRouter from "./routes/catalog.js"; // 🆕 Variant Groups
 import orderWorker from "./workers/order-processor.js"; // 🆕 Order Worker
 import emailWorker from "./workers/email-processor.js"; // 🆕 Email Worker
 import { isQueueReady } from "./lib/redis.js";
@@ -119,6 +120,7 @@ app.use("/admin/payment", strictLimiter, paymentRouter);
 // ✅ Public Routes
 app.use("/collections", collectionsRouter);
 app.use("/products", productsRouter);
+app.use("/catalog", catalogRouter);
 app.use("/search", searchRouter);
 
 app.use("/cart", cartRouter);
